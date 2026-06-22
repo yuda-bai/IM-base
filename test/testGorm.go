@@ -3,21 +3,14 @@ package main
 import (
 	"fmt"
 	"ginchat/models"
-
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
+	"ginchat/utils"
 )
 
 func main() {
-	dsn := "root:123456@tcp(127.0.0.1:3306)/ginchat?charset=utf8mb4&parseTime=True&loc=Local"
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		panic("failed to connect database: " + err.Error())
-	}
+	utils.InitConfig()
+	utils.InitMySQL()
 
-	if err := db.AutoMigrate(&models.UserBasic{}); err != nil {
-		panic("failed to migrate: " + err.Error())
-	}
+	db := models.DB
 
 	// Create 创建
 	user := models.UserBasic{
@@ -26,14 +19,34 @@ func main() {
 		Phone:    "12345678901",
 		Email:    "test@example.com",
 	}
-	db.Create(&user)
+	result := db.Create(&user)
+	if result.Error != nil {
+		fmt.Println("插入失败:", result.Error)
+		return
+	}
+	fmt.Printf("插入成功，影响行数: %d，新用户 ID: %d\n", result.RowsAffected, user.ID)
 
 	// Read 查询
-	db.First(&user, user.ID)
-	fmt.Printf("查询结果: %+v\n", user)
+	var found models.UserBasic
+	result = db.First(&found, user.ID)
+	if result.Error != nil {
+		fmt.Println("查询失败:", result.Error)
+		return
+	}
+	fmt.Printf("查询结果: %+v\n", found)
 
 	// Update 更新
-	db.Model(&user).Update("name", "test1")
+	result = db.Model(&found).Update("name", "test_updated")
+	if result.Error != nil {
+		fmt.Println("更新失败:", result.Error)
+		return
+	}
+	fmt.Printf("更新成功，影响行数: %d\n", result.RowsAffected)
+
+	// 最终验证
+	var count int64
+	db.Model(&models.UserBasic{}).Count(&count)
+	fmt.Printf("数据库中共有 %d 条用户记录\n", count)
 
 	fmt.Println("MySQL 连接成功")
 }
