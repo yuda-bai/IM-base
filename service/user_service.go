@@ -2,10 +2,12 @@ package service
 
 import (
 	"fmt"
+	"ginchat/common"
 	"ginchat/models"
 	"ginchat/utils"
 	"math/rand"
 	"strconv"
+	"time"
 
 	"github.com/asaskevich/govalidator/v12"
 	"github.com/gin-gonic/gin"
@@ -29,23 +31,17 @@ func CreateUser(c *gin.Context) {
 	data := models.FindUserByName(user.Name)
 
 	if password != repassword {
-		c.JSON(-1, gin.H{
-			"message": "密码不一致",
-		})
+		common.Fail(c, "密码不一致")
 		return
 	}
 	if data.Name != "" {
-		c.JSON(-1, gin.H{
-			"message": "用户已存在",
-		})
+		common.Fail(c, "用户已存在")
 		return
 	}
 	user.Salt = salt
 	user.PassWord = utils.MakePassword(password, salt)
 	models.CreateUser(user)
-	c.JSON(200, gin.H{
-		"message": "新增用户成功",
-	})
+	common.Success(c, "新增用户成功", nil)
 }
 
 // FindUserByNameAndPassword 通过用户名和密码查找用户
@@ -57,7 +53,6 @@ func CreateUser(c *gin.Context) {
 // @Success      200  {object}  map[string]interface{}
 // @Router       /user/FindUserByNameAndPassword [post]
 func FindUserByNameAndPassword(c *gin.Context) {
-	data := models.UserBasic{}
 	name := c.Query("name")
 	password := c.Query("password")
 	if password == "" {
@@ -65,23 +60,20 @@ func FindUserByNameAndPassword(c *gin.Context) {
 	}
 	user := models.FindUserByName(name)
 	if user.Name == "" {
-		c.JSON(-1, gin.H{
-			"message": "用户不存在",
-		})
+		common.Fail(c, "用户不存在")
 		return
 	}
 	flag := utils.ValidatePassword(password, user.Salt, user.PassWord)
 	if !flag {
-		c.JSON(-1, gin.H{
-			"message": "密码错误",
-		})
+		common.Fail(c, "密码错误")
 		return
 	}
-	pwd := utils.MakePassword(password, user.Salt)
-	data = models.FindUserByNameAndPassword(name, pwd)
-	c.JSON(200, gin.H{
-		"message": data,
-	})
+	// 生成token并更新用户身份标识
+	str := fmt.Sprintf("%d", time.Now().Unix())
+	temp := utils.Md5Encode(str)
+	models.UpdateIdentity(user.ID, temp)
+	user.Identity = temp
+	common.Success(c, "登录成功", user)
 }
 
 // GetUserList 获取用户列表
@@ -91,9 +83,7 @@ func FindUserByNameAndPassword(c *gin.Context) {
 // @Success      200  {object}  map[string]interface{}
 // @Router       /user/GetUserList [get]
 func GetUserList(c *gin.Context) {
-	c.JSON(200, gin.H{
-		"message": models.GetUserList(),
-	})
+	common.Success(c, "获取成功", models.GetUserList())
 }
 
 // DeleteUser 删除用户
@@ -108,16 +98,12 @@ func DeleteUser(c *gin.Context) {
 	idStr := c.Query("id")
 	id, err := strconv.Atoi(idStr)
 	if err != nil {
-		c.JSON(-1, gin.H{
-			"message": "无效的id",
-		})
+		common.Fail(c, "无效的id")
 		return
 	}
 	user.ID = uint(id)
 	models.DeleteUser(user)
-	c.JSON(200, gin.H{
-		"message": "删除成功",
-	})
+	common.Success(c, "删除成功", nil)
 }
 
 // UpdateUser 修改用户
@@ -141,13 +127,9 @@ func UpdateUser(c *gin.Context) {
 	user.Phone = c.PostForm("phone")
 	_, err := govalidator.ValidateStruct(user)
 	if err != nil {
-		c.JSON(-1, gin.H{
-			"message": "数据验证错误",
-		})
+		common.Fail(c, "数据验证错误")
 		return
 	}
 	models.UpdateUser(user)
-	c.JSON(200, gin.H{
-		"message": "修改成功",
-	})
+	common.Success(c, "修改成功", nil)
 }

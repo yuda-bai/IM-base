@@ -11,7 +11,6 @@ var DB *gorm.DB
 
 type UserBasic struct {
 	gorm.Model
-	Id            uint `gorm:"primarykey"`
 	Name          string
 	PassWord      string
 	Salt          string
@@ -39,6 +38,11 @@ func FindUserByNameAndPassword(name string, password string) UserBasic {
 	user := UserBasic{}
 	DB.Where("name = ? and pass_word=? ", name, password).First(&user)
 	return user
+}
+
+// UpdateIdentity 更新用户身份标识(token)
+func UpdateIdentity(userID uint, identity string) {
+	DB.Model(&UserBasic{}).Where("id = ?", userID).Update("identity", identity)
 }
 
 // FindUserByPhone 通过电话号码查找用户
