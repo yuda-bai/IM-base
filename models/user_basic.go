@@ -14,6 +14,7 @@ type UserBasic struct {
 	Id            uint `gorm:"primarykey"`
 	Name          string
 	PassWord      string
+	Salt          string
 	Phone         string `valid:"matches(^1[3-9][0-9]{9}$)"`
 	Email         string `valid:"email"`
 	ClientID      string
@@ -30,6 +31,13 @@ type UserBasic struct {
 func FindUserByName(name string) UserBasic {
 	user := UserBasic{}
 	DB.Where("name = ?", name).First(&user)
+	return user
+}
+
+// FindUserByNameAndPassword 通过用户名和密码查找用户
+func FindUserByNameAndPassword(name string, password string) UserBasic {
+	user := UserBasic{}
+	DB.Where("name = ? and pass_word=? ", name, password).First(&user)
 	return user
 }
 
