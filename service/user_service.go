@@ -4,6 +4,7 @@ import (
 	"ginchat/models"
 	"strconv"
 
+	"github.com/asaskevich/govalidator/v12"
 	"github.com/gin-gonic/gin"
 )
 
@@ -89,7 +90,13 @@ func UpdateUser(c *gin.Context) {
 	user.PassWord = c.PostForm("password")
 	user.Email = c.PostForm("email")
 	user.Phone = c.PostForm("phone")
-
+	_, err := govalidator.ValidateStruct(user)
+	if err != nil {
+		c.JSON(-1, gin.H{
+			"message": "数据验证错误",
+		})
+		return
+	}
 	models.UpdateUser(user)
 	c.JSON(200, gin.H{
 		"message": "修改成功",
