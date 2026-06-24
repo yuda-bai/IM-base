@@ -15,6 +15,7 @@ import (
 func main() {
 	utils.InitConfig()
 	utils.InitMySQL()
+	utils.InitRedis()
 	models.GetUserList()
 	r := router.Router()
 	r.Run(":8080") // listens on 0.0.0.0:8080 by default

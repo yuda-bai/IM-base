@@ -6,11 +6,13 @@ import (
 	"ginchat/models"
 	"ginchat/utils"
 	"math/rand"
+	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/asaskevich/govalidator/v12"
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 // CreateUser 新增用户
@@ -132,4 +134,75 @@ func UpdateUser(c *gin.Context) {
 	}
 	models.UpdateUser(user)
 	common.Success(c, "修改成功", nil)
+}
+
+// 跨域站点伪造请求
+var upGrade = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return false
+	},
+}
+
+func SendMsg(c *gin.Context) {
+	ws, err := upGrade.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer func(ws *websocket.Conn) {
+		err = ws.Close()
+		if err != nil {
+			fmt.Println(err)
+		}
+	}(ws)
+	MsgHandler(ws, c)
+}
+func MsgHandler(ws *websocket.Conn, c *gin.Context) {
+	// 订阅Redis频道
+	sub := models.Redis.Subscribe(c, utils.PublishKey)
+	defer sub.Close()
+	fmt.Println("订阅成功")
+
+	// 获取Redis消息通道
+	redisMsgCh := sub.Channel()
+
+	// 启动goroutine读取WebSocket客户端消息
+	wsMsgCh := make(chan []byte)
+	go func() {
+		for {
+			_, msg, err := ws.ReadMessage()
+			if err != nil {
+				wsMsgCh <- nil
+				return
+			}
+			wsMsgCh <- msg
+		}
+	}()
+
+	for {
+		select {
+		// 读取WebSocket客户端发来的消息
+		case msg := <-wsMsgCh:
+			if msg == nil {
+				fmt.Println("客户端断开连接")
+				return
+			}
+			// 将客户端消息发布到Redis
+			err := utils.Publish(c, utils.PublishKey, string(msg))
+			if err != nil {
+				fmt.Println("发布消息失败:", err)
+			}
+
+		// 读取Redis订阅消息，推送给WebSocket客户端
+		case redisMsg := <-redisMsgCh:
+			tm := time.Now().Format("2006-01-02 15:04:05")
+			m := fmt.Sprintf("[ws][%s]:%s", tm, redisMsg.Payload)
+			fmt.Println("收到Redis消息:", m)
+			err := ws.WriteMessage(1, []byte(m))
+			if err != nil {
+				fmt.Println("写入消息失败")
+				return
+			}
+		}
+	}
 }
