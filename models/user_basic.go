@@ -11,6 +11,7 @@ var DB *gorm.DB
 
 type UserBasic struct {
 	gorm.Model
+	Id            uint `gorm:"primarykey"`
 	Name          string
 	PassWord      string
 	Phone         string `valid:"matches(^1[3-9][0-9]{9}$)"`
@@ -25,6 +26,22 @@ type UserBasic struct {
 	DeviceInfo    string
 }
 
+// FindUserByName 通过用户名查找用户
+func FindUserByName(name string) UserBasic {
+	user := UserBasic{}
+	DB.Where("name = ?", name).First(&user)
+	return user
+}
+
+// FindUserByPhone 通过电话号码查找用户
+func FindUserByPhone(phone string) *gorm.DB {
+	return DB.Where("phone = ?", phone).First(&UserBasic{})
+}
+
+// FindUserByEmail 通过email查找用户
+func FindUserByEmail(email string) *gorm.DB {
+	return DB.Where("email = ?", email).First(&UserBasic{})
+}
 func (table *UserBasic) TableName() string {
 	return "user_basic"
 }

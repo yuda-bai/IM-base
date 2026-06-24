@@ -8,7 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// CreateUser 获取用户
+// CreateUser 新增用户
 // @Summary      新增用户
 // @Tags         用户管理
 // @Param        name   query   string   true  "用户名"
@@ -22,9 +22,18 @@ func CreateUser(c *gin.Context) {
 	user.Name = c.Query("name")
 	password := c.Query("password")
 	repassword := c.Query("repassword")
+
+	data := models.FindUserByName(user.Name)
+
 	if password != repassword {
 		c.JSON(-1, gin.H{
 			"message": "密码不一致",
+		})
+		return
+	}
+	if data.Name != "" {
+		c.JSON(-1, gin.H{
+			"message": "用户已存在",
 		})
 		return
 	}
