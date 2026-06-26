@@ -136,10 +136,10 @@ func UpdateUser(c *gin.Context) {
 	common.Success(c, "修改成功", nil)
 }
 
-// 跨域站点伪造请求
+// WebSocket 升级器
 var upGrade = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
-		return false
+		return true
 	},
 }
 
@@ -165,6 +165,10 @@ func MsgHandler(ws *websocket.Conn, c *gin.Context) {
 
 	// 获取Redis消息通道
 	redisMsgCh := sub.Channel()
+
+	// 发送欢迎消息到Redis，通过Pub/Sub广播给所有客户端
+	welcomeMsg := `{"userId":0,"userName":"系统","content":"欢迎来到聊天室！","type":"system","messageId":"0"}`
+	utils.Publish(c, utils.PublishKey, welcomeMsg)
 
 	// 启动goroutine读取WebSocket客户端消息
 	wsMsgCh := make(chan []byte)
@@ -205,4 +209,61 @@ func MsgHandler(ws *websocket.Conn, c *gin.Context) {
 			}
 		}
 	}
+}
+func SendUserMsg(c *gin.Context) {
+	models.Chat(c.Writer, c.Request)
+}
+
+// SearchFriend 获取好友列表
+// @Summary      获取好友列表
+// @Tags         用户管理
+// @Param        userid   query   uint   true  "用户ID"
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}
+// @Router       /user/SearchFriend [get]
+func SearchFriend(c *gin.Context) {
+	idStr := c.Query("userid")
+	userid, err := strconv.ParseUint(idStr, 10, 64)
+	if err != nil {
+		common.Fail(c, "无效的用户ID")
+		return
+	}
+	friends := models.SearchFriend(uint(userid))
+	common.Success(c, "获取好友列表成功", friends)
+}
+
+// AddFriend 添加好友
+// @Summary      添加好友
+// @Tags         用户管理
+// @Param        userId   formData   uint   true  "当前用户ID"
+// @Param        targetId   formData   uint   true  "目标好友ID"
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}
+// @Router       /user/AddFriend [post]
+func AddFriend(c *gin.Context) {
+	userIdStr := c.PostForm("userId")
+	targetIdStr := c.PostForm("targetId")
+
+	userId, err := strconv.ParseUint(userIdStr, 10, 64)
+	if err != nil {
+		common.Fail(c, "无效的用户ID")
+		return
+	}
+	targetId, err := strconv.ParseUint(targetIdStr, 10, 64)
+	if err != nil {
+		common.Fail(c, "无效的目标好友ID")
+		return
+	}
+
+	if userId == targetId {
+		common.Fail(c, "不能添加自己为好友")
+		return
+	}
+
+	err = models.AddFriend(uint(userId), uint(targetId))
+	if err != nil {
+		common.Fail(c, err.Error())
+		return
+	}
+	common.Success(c, "添加好友成功", nil)
 }
