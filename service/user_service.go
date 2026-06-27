@@ -191,6 +191,8 @@ func MsgHandler(ws *websocket.Conn, c *gin.Context) {
 				fmt.Println("客户端断开连接")
 				return
 			}
+			//保存消息到数据库
+			models.Dispatch(msg)
 			// 将客户端消息发布到Redis
 			err := utils.Publish(c, utils.PublishKey, string(msg))
 			if err != nil {
@@ -266,4 +268,31 @@ func AddFriend(c *gin.Context) {
 		return
 	}
 	common.Success(c, "添加好友成功", nil)
+}
+
+// GetChatRecord 获取与某个用户的聊天记录
+// @Summary      获取与某个用户的聊天记录
+// @Tags         用户管理
+// @Param        id   formData   uint   true  "当前用户ID"
+// @Param        targetId   formData   uint   true  "目标用户ID"
+// @Param        page   formData   uint   true  "页码"
+// @Param        pageSize   formData   uint   true  "每页数量"
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}
+// @Router       /user/GetChatRecord [get]
+func GetChatRecord(c *gin.Context) {
+	user := models.UserBasic{}
+	id, _ := strconv.Atoi(c.PostForm("userId"))
+	user.ID = uint(id)
+	fmt.Println(user.ID)
+	targetId, _ := strconv.Atoi(c.PostForm("targetId"))
+	page, _ := strconv.Atoi(c.PostForm("page"))
+	pageSize, _ := strconv.Atoi(c.PostForm("pageSize"))
+	messages, err := models.GetChatHistory(user.ID, targetId, page, pageSize)
+	fmt.Println(messages)
+	if err != nil {
+		common.Fail(c, "获取失败")
+		return
+	}
+	common.Success(c, "获取成功", messages)
 }

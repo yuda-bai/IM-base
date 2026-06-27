@@ -21,6 +21,30 @@ paths:
       summary: 首页
       tags:
       - 首页
+  /user/AddFriend:
+    post:
+      parameters:
+      - description: 当前用户ID
+        in: formData
+        name: userId
+        required: true
+        type: integer
+      - description: 目标好友ID
+        in: formData
+        name: targetId
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 添加好友
+      tags:
+      - 用户管理
   /user/CreateUser:
     get:
       parameters:
@@ -92,6 +116,40 @@ paths:
       summary: 登入
       tags:
       - 用户管理
+  /user/GetChatRecord:
+    get:
+      parameters:
+      - description: 当前用户ID
+        in: formData
+        name: id
+        required: true
+        type: integer
+      - description: 目标用户ID
+        in: formData
+        name: targetId
+        required: true
+        type: integer
+      - description: 页码
+        in: formData
+        name: page
+        required: true
+        type: integer
+      - description: 每页数量
+        in: formData
+        name: pageSize
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 获取与某个用户的聊天记录
+      tags:
+      - 用户管理
   /user/GetUserList:
     get:
       produces:
@@ -107,6 +165,12 @@ paths:
       - 用户管理
   /user/SearchFriend:
     get:
+      parameters:
+      - description: 用户ID
+        in: query
+        name: userid
+        required: true
+        type: integer
       produces:
       - application/json
       responses:

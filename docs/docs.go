@@ -38,6 +38,42 @@ const docTemplate = `{
                 }
             }
         },
+        "/user/AddFriend": {
+            "post": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "用户管理"
+                ],
+                "summary": "添加好友",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "当前用户ID",
+                        "name": "userId",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "目标好友ID",
+                        "name": "targetId",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/user/CreateUser": {
             "get": {
                 "produces": [
@@ -145,6 +181,56 @@ const docTemplate = `{
                 }
             }
         },
+        "/user/GetChatRecord": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "用户管理"
+                ],
+                "summary": "获取与某个用户的聊天记录",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "当前用户ID",
+                        "name": "id",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "目标用户ID",
+                        "name": "targetId",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "页码",
+                        "name": "page",
+                        "in": "formData",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "description": "每页数量",
+                        "name": "pageSize",
+                        "in": "formData",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/user/GetUserList": {
             "get": {
                 "produces": [
@@ -174,6 +260,15 @@ const docTemplate = `{
                     "用户管理"
                 ],
                 "summary": "获取好友列表",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "用户ID",
+                        "name": "userid",
+                        "in": "query",
+                        "required": true
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",

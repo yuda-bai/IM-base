@@ -66,7 +66,7 @@ func InitMySQL() {
 	}
 	fmt.Println("数据库连接验证成功")
 
-	if err := models.DB.AutoMigrate(&models.UserBasic{}, &models.Contact{}); err != nil {
+	if err := models.DB.AutoMigrate(&models.UserBasic{}, &models.Contact{}, &models.Message{}); err != nil {
 		panic("数据表迁移失败: " + err.Error())
 	}
 	fmt.Println("数据表迁移完成")

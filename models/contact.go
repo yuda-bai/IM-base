@@ -21,14 +21,12 @@ func (table *Contact) TableName() string {
 
 // SearchFriend 搜索好友
 func SearchFriend(userId uint) []UserBasic {
-	contacts := make([]Contact, 0)
 	users := make([]UserBasic, 0)
-	DB.Where("owner_id = ? AND type = ?", userId, 1).Find(&contacts)
-	for _, v := range contacts {
-		user := UserBasic{}
-		DB.Where("id = ?", v.TargetId).First(&user)
-		users = append(users, user)
-	}
+	DB.Table("user_basic").
+		Select("user_basic.*").
+		Joins("INNER JOIN contacts on user_basic.id = contacts.target_id").
+		Where("contacts.owner_id = ? AND contacts.type = ?", userId, 1).
+		Find(&users)
 	return users
 }
 

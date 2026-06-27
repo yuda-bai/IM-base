@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
@@ -14,15 +15,16 @@ import (
 
 type Message struct {
 	gorm.Model
-	FormId   int64  //发送者id
-	TargetId int64  //接收者id
-	Type     int    //消息类型 1私聊 2群聊 3广播
-	Media    string //消息媒体类型 1 文本 2表情包 3 图片 4 音频
-	Content  string //消息内容
-	Pic      string //图片
-	Url      string //链接
-	Desc     string //描述
-	Amount   int    //其他数字统计
+	FormId    int64  //发送者id
+	TargetId  int64  //接收者id
+	Type      int    //消息类型 1私聊  2群聊 3广播
+	Media     string //消息媒体类型 1 文本 2表情包 3 图片 4 音频
+	Content   string //消息内容
+	Pic       string //图片
+	Url       string //链接
+	Desc      string //描述
+	IsOffline bool   //是否离线消息
+	Amount    int    //其他数字统计
 }
 
 func (table *Message) TableName() string {
@@ -41,6 +43,10 @@ var clientMap map[int64]*Node = make(map[int64]*Node)
 // 读写锁
 var rwLocker sync.RWMutex
 
+// SaveMessage 消息持久化 保存在数据库
+func SaveMessage(message Message) error {
+	return DB.Create(message).Error
+}
 func Chat(writer http.ResponseWriter, request *http.Request) {
 	//校验合法性
 	query := request.URL.Query()
@@ -77,11 +83,16 @@ func Chat(writer http.ResponseWriter, request *http.Request) {
 	//6.完成接收逻辑
 	go recvProc(node)
 	sendMsg(userId, []byte("欢迎来到聊天室"))
+	//7.发送离线消息
+	go sendOfflineMessages(userId)
 }
+
+// 发送消息
 func sendProc(node *Node) {
 	for {
 		select {
 		case data := <-node.DataQueue:
+			fmt.Printf("sendProc>>>>   [ws] 发送消息成功: %s\n", string(data))
 			err := node.Conn.WriteMessage(websocket.TextMessage, data)
 			if err != nil {
 				fmt.Println("发送消息错误", err)
@@ -90,6 +101,43 @@ func sendProc(node *Node) {
 		}
 	}
 }
+
+// 发送离线消息
+func sendOfflineMessages(userId int64) {
+	messages, err := getOfflineMessages(userId, 1)
+	if err != nil {
+		fmt.Println("获取离线消息错误", err)
+		return
+	}
+	if len(messages) == 0 {
+		return
+	}
+	fmt.Printf("发送离线消息一共%d给用户%d", len(messages), userId)
+	for _, message := range messages {
+		msgData := map[string]interface{}{
+			"userId":    message.FormId,
+			"targetId":  message.TargetId,
+			"type":      message.Type,
+			"userName":  "用户",
+			"content":   message.Content,
+			"pic":       message.Pic,
+			"url":       message.Url,
+			"messageId": fmt.Sprintf("%d", message.ID),
+			"timestamp": message.CreatedAt.Format("2006-01-02 15:04:05"),
+			"isOffline": true,
+		}
+		jsonData, err := json.Marshal(msgData)
+		if err != nil {
+			fmt.Println("json解析错误", err)
+			fmt.Println("json解析错误:", err, "原始数据:", jsonData)
+			continue
+		}
+		sendMsg(userId, jsonData)
+	}
+	fmt.Printf("已发送 %d 条离线消息给用户 %d\n", len(messages), userId)
+}
+
+// 接收消息
 func recvProc(node *Node) {
 	for {
 		_, data, err := node.Conn.ReadMessage()
@@ -97,8 +145,9 @@ func recvProc(node *Node) {
 			fmt.Println("接收消息错误", err)
 			return
 		}
-		broadMsg(data)
-		fmt.Println("[ws] 接收消息成功", data)
+		broadMsg(data) // ← 直接分发消息，让目标用户接收
+		Dispatch(data)
+		fmt.Printf("recvProc<<<  [ws] 接收消息成功 %s\n", string(data))
 	}
 }
 
@@ -167,13 +216,21 @@ func udpRecvProc() {
 	}
 }
 
-// 后端调度逻辑处理
-func dispatch(data []byte) {
+// Dispatch 后端调度逻辑处理
+func Dispatch(data []byte) {
 	msg := Message{}
 	err := json.Unmarshal(data, &msg)
 	if err != nil {
-		fmt.Println("json解析错误", err)
+		fmt.Println("Dispatch  json解析错误", err, "原始数据:", msg) //todo 待修改
 		return
+	}
+	//保存消息到数据库
+	if msg.Type == 1 || msg.Type == 3 || msg.Type == 2 {
+		if err := SaveMessage(msg); err != nil {
+			fmt.Println("json解析错误:", err, "原始数据:", string(data))
+			return
+		}
+		fmt.Printf("保存消息成功: %s", msg)
 	}
 	switch msg.Type {
 	case 1:
@@ -188,6 +245,8 @@ func dispatch(data []byte) {
 
 	}
 }
+
+// 发送消息
 func sendMsg(userID int64, msg []byte) {
 	rwLocker.RLock()
 	node, ok := clientMap[userID]
@@ -197,4 +256,28 @@ func sendMsg(userID int64, msg []byte) {
 		return
 	}
 	node.DataQueue <- msg
+	fmt.Println("[ws] >>>进入聊天系统")
+}
+
+// 获取用户的离线消息
+func getOfflineMessages(userId int64, msgType int) (messages []Message, err error) {
+	err = DB.Where("target_id = ? AND type = ? AND created_at > ?", userId, msgType, time.Now().Add(-24*7*time.Hour)).
+		Order("created_at ASC").
+		Find(&messages).Error
+	return
+}
+
+// GetChatHistory 获取与某个用户的聊天记录
+func GetChatHistory(userId uint, targetId int, page int, pageSize int) ([]Message, error) {
+	var messages []Message
+	err := DB.Where("form_id = ? AND target_id = ?", userId, targetId).
+		Order("created_at DESC").
+		Offset(pageSize * (page - 1)).
+		Limit(pageSize).
+		Find(&messages).Error
+	//反转数组,显示顺序为正序
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+	return messages, err
 }
