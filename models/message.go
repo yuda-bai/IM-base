@@ -35,10 +35,11 @@ type Node struct {
 	Conn      *websocket.Conn
 	DataQueue chan []byte
 	GroupSets map[string]interface{}
+	UserId    int64 // 用于 recvProc/sendProc 退出时按值精确清理 clientMap
 }
 
 // 映射关系
-var clientMap map[int64]*Node = make(map[int64]*Node)
+var clientMap = make(map[int64]*Node)
 
 // 读写锁
 var rwLocker sync.RWMutex
@@ -47,19 +48,25 @@ var rwLocker sync.RWMutex
 func SaveMessage(message *Message) error {
 	return DB.Create(message).Error
 }
+
+// removeFromClientMap 安全地从 clientMap 中移除指定 userId 的连接（仅在锁外调用）
+func removeFromClientMap(userId int64, reason string) {
+	rwLocker.Lock()
+	defer rwLocker.Unlock()
+	if _, exists := clientMap[userId]; exists {
+		delete(clientMap, userId)
+		fmt.Printf("🗑 用户%d已从clientMap移除(原因:%s),当前在线:%d人\n", userId, reason, len(clientMap))
+	}
+}
+
 func Chat(writer http.ResponseWriter, request *http.Request) {
 	//校验合法性
 	query := request.URL.Query()
 	Id := query.Get("userId")
 	userId, _ := strconv.ParseInt(Id, 10, 64)
-	//token := query.Get("token")
-	//targetId := query.Get("targetId")
-	//context := query.Get("context")
-	//msgType := query.Get("type")
 	isvalida := true //todo 校验token
 	conn, err := (&websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
-			//token校验
 			return isvalida
 		},
 	}).Upgrade(writer, request, nil)
@@ -72,43 +79,47 @@ func Chat(writer http.ResponseWriter, request *http.Request) {
 		Conn:      conn,
 		DataQueue: make(chan []byte, 50),
 		GroupSets: make(map[string]interface{}),
+		UserId:    userId,
 	}
 	//3.用户关系
 	//4.userid 与 node绑定并加锁
 	rwLocker.Lock()
 	if oldNode, exists := clientMap[userId]; exists {
-		fmt.Printf("用户%d重新连接,关闭旧链接\n", userId)
-		err := oldNode.Conn.Close()
-		if err != nil {
-			return
-		}
+		fmt.Printf("⚠️ 用户%d重新连接,关闭旧链接并替换为新连接\n", userId)
+		oldNode.Conn.Close()
 		close(oldNode.DataQueue)
-		return
 	}
 	clientMap[userId] = node
 	rwLocker.Unlock()
+	fmt.Printf("✅ 用户%d已注册到clientMap,当前在线:%d人\n", userId, len(clientMap))
 	//5.完成发送逻辑
 	go sendProc(node)
 	//6.完成接收逻辑
 	go recvProc(node)
-	sendMsg(userId, []byte("欢迎来到聊天室"))
+	welcomeData, _ := json.Marshal(map[string]interface{}{
+		"userId":    0,
+		"userName":  "系统",
+		"content":   "欢迎来到聊天室",
+		"type":      "system",
+		"messageId": fmt.Sprintf("welcome-%d", userId),
+	})
+	sendMsg(userId, welcomeData)
 	//7.发送离线消息
 	go sendOfflineMessages(userId)
 }
 
-// 发送消息
+// 发送消息到客户端
 func sendProc(node *Node) {
-	for {
-		select {
-		case data := <-node.DataQueue:
-			fmt.Printf("sendProc>>>>   [ws] 发送消息成功: %s\n", string(data))
-			err := node.Conn.WriteMessage(websocket.TextMessage, data)
-			if err != nil {
-				fmt.Println("发送消息错误", err)
-				return
-			}
+	defer removeFromClientMap(node.UserId, "sendProc退出")
+	for data := range node.DataQueue {
+		err := node.Conn.WriteMessage(websocket.TextMessage, data)
+		if err != nil {
+			fmt.Printf("发送消息错误(连接可能已关闭): %v\n", err)
+			return
 		}
+		fmt.Printf("[ws] <<<发送消息成功 userId=%d: %s\n", node.UserId, string(data))
 	}
+	fmt.Printf("sendProc 退出:DataQueue已关闭 userId=%d\n", node.UserId)
 }
 
 // 发送离线消息
@@ -121,7 +132,7 @@ func sendOfflineMessages(userId int64) {
 	if len(messages) == 0 {
 		return
 	}
-	fmt.Printf("发送离线消息一共%d给用户%d", len(messages), userId)
+	fmt.Printf("发送离线消息一共%d给用户%d\n", len(messages), userId)
 	for _, message := range messages {
 		msgData := map[string]interface{}{
 			"userId":    message.FormId,
@@ -138,8 +149,7 @@ func sendOfflineMessages(userId int64) {
 		}
 		jsonData, err := json.Marshal(msgData)
 		if err != nil {
-			fmt.Println("json解析错误", err)
-			fmt.Println("json解析错误:", err, "原始数据:", jsonData)
+			fmt.Println("离线消息json解析错误:", err)
 			continue
 		}
 		sendMsg(userId, jsonData)
@@ -147,25 +157,21 @@ func sendOfflineMessages(userId int64) {
 	fmt.Printf("已发送 %d 条离线消息给用户 %d\n", len(messages), userId)
 }
 
-// 接收消息
+// 接收客户端消息
 func recvProc(node *Node) {
+	defer func() {
+		// ★ 关键：连接断开时清理 clientMap，使用 UserId 而不是指针比较
+		removeFromClientMap(node.UserId, "recvProc连接断开")
+	}()
 	for {
 		_, data, err := node.Conn.ReadMessage()
 		if err != nil {
-			fmt.Println("接收消息错误", err)
-			rwLocker.Lock() //加锁
-			for uid, n := range clientMap {
-				if n == node {
-					delete(clientMap, uid)
-					fmt.Printf("用户 %d 已从clientMap移除\n", uid)
-					break
-				}
-			}
-			return
+			fmt.Printf("接收消息错误 userId=%d: %v\n", node.UserId, err)
+			return // defer 会自动清理
 		}
-		broadMsg(data) // ← 直接分发消息，让目标用户接收
+		broadMsg(data)
 		Dispatch(data)
-		fmt.Printf("recvProc<<<  [ws] 接收消息成功 %s\n", string(data))
+		fmt.Printf("recvProc<<< [ws] userId=%d 接收消息成功: %s\n", node.UserId, string(data))
 	}
 }
 
@@ -189,13 +195,7 @@ func udpSendProc() {
 		fmt.Println("udp连接错误", err)
 		return
 	}
-	defer func(conn *net.UDPConn) {
-		err := conn.Close()
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-	}(conn)
+	defer conn.Close()
 	for {
 		select {
 		case data := <-udpsendChan:
@@ -208,7 +208,7 @@ func udpSendProc() {
 	}
 }
 
-// 完成udp数据发送协程
+// 完成udp数据接收协程
 func udpRecvProc() {
 	con, err := net.ListenUDP("udp", &net.UDPAddr{
 		IP:   net.ParseIP("0.0.0.0"),
@@ -218,11 +218,7 @@ func udpRecvProc() {
 		fmt.Println("udp监听错误", err)
 		return
 	}
-	defer func(con *net.UDPConn) {
-		err := con.Close()
-		if err != nil {
-		}
-	}(con)
+	defer con.Close()
 	for {
 		var buf [1024]byte
 		n, err := con.Read(buf[0:])
@@ -239,43 +235,41 @@ func Dispatch(data []byte) {
 	msg := Message{}
 	err := json.Unmarshal(data, &msg)
 	if err != nil {
-		fmt.Println("Dispatch  json解析错误", err, "原始数据:", msg) //todo 待修改
+		fmt.Println("Dispatch json解析错误:", err)
 		return
 	}
 	//保存消息到数据库
 	if msg.Type == 1 || msg.Type == 3 || msg.Type == 2 {
 		if err := SaveMessage(&msg); err != nil {
-			fmt.Println("json解析错误:", err, "原始数据:", string(data))
+			fmt.Println("保存消息失败:", err, "原始数据:", string(data))
 			return
 		}
-		fmt.Printf("保存消息成功: %s", msg)
+		fmt.Printf("保存消息成功: ID=%d FormId=%d TargetId=%d Type=%d Content=%s\n",
+			msg.ID, msg.FormId, msg.TargetId, msg.Type, msg.Content)
 	}
 	switch msg.Type {
 	case 1:
 		//单聊
 		sendMsg(msg.TargetId, data)
 		sendMsg(msg.FormId, data) //发送端接收回显
-		//case 2:
-		//	//群聊
-		//	sendGroupMSg()
-		//case 3:
-		//	//广播
-		//	sendAllMsg()
-
 	}
 }
 
-// 发送消息
+// 发送消息到指定用户的 DataQueue
 func sendMsg(userID int64, msg []byte) {
 	rwLocker.RLock()
 	node, ok := clientMap[userID]
 	rwLocker.RUnlock()
 	if !ok {
-		fmt.Println("用户不存在")
+		fmt.Printf("⚠️ sendMsg失败: 用户%d不在clientMap中(幽灵连接或未上线)\n", userID)
 		return
 	}
-	node.DataQueue <- msg
-	fmt.Println("[ws] >>>进入聊天系统")
+	select {
+	case node.DataQueue <- msg:
+		fmt.Printf("sendMsg [ws] >>>发送到用户%d成功: %s\n", userID, string(msg))
+	default:
+		fmt.Printf("⚠️ 消息队列已满 userId=%d\n", userID)
+	}
 }
 
 // 获取用户的离线消息
