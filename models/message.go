@@ -44,7 +44,7 @@ var clientMap map[int64]*Node = make(map[int64]*Node)
 var rwLocker sync.RWMutex
 
 // SaveMessage 消息持久化 保存在数据库
-func SaveMessage(message Message) error {
+func SaveMessage(message *Message) error {
 	return DB.Create(message).Error
 }
 func Chat(writer http.ResponseWriter, request *http.Request) {
@@ -76,6 +76,15 @@ func Chat(writer http.ResponseWriter, request *http.Request) {
 	//3.用户关系
 	//4.userid 与 node绑定并加锁
 	rwLocker.Lock()
+	if oldNode, exists := clientMap[userId]; exists {
+		fmt.Printf("用户%d重新连接,关闭旧链接\n", userId)
+		err := oldNode.Conn.Close()
+		if err != nil {
+			return
+		}
+		close(oldNode.DataQueue)
+		return
+	}
 	clientMap[userId] = node
 	rwLocker.Unlock()
 	//5.完成发送逻辑
@@ -122,6 +131,7 @@ func sendOfflineMessages(userId int64) {
 			"content":   message.Content,
 			"pic":       message.Pic,
 			"url":       message.Url,
+			"media":     message.Media,
 			"messageId": fmt.Sprintf("%d", message.ID),
 			"timestamp": message.CreatedAt.Format("2006-01-02 15:04:05"),
 			"isOffline": true,
@@ -143,6 +153,14 @@ func recvProc(node *Node) {
 		_, data, err := node.Conn.ReadMessage()
 		if err != nil {
 			fmt.Println("接收消息错误", err)
+			rwLocker.Lock() //加锁
+			for uid, n := range clientMap {
+				if n == node {
+					delete(clientMap, uid)
+					fmt.Printf("用户 %d 已从clientMap移除\n", uid)
+					break
+				}
+			}
 			return
 		}
 		broadMsg(data) // ← 直接分发消息，让目标用户接收
@@ -226,7 +244,7 @@ func Dispatch(data []byte) {
 	}
 	//保存消息到数据库
 	if msg.Type == 1 || msg.Type == 3 || msg.Type == 2 {
-		if err := SaveMessage(msg); err != nil {
+		if err := SaveMessage(&msg); err != nil {
 			fmt.Println("json解析错误:", err, "原始数据:", string(data))
 			return
 		}
@@ -236,6 +254,7 @@ func Dispatch(data []byte) {
 	case 1:
 		//单聊
 		sendMsg(msg.TargetId, data)
+		sendMsg(msg.FormId, data) //发送端接收回显
 		//case 2:
 		//	//群聊
 		//	sendGroupMSg()
@@ -264,6 +283,7 @@ func getOfflineMessages(userId int64, msgType int) (messages []Message, err erro
 	err = DB.Where("target_id = ? AND type = ? AND created_at > ?", userId, msgType, time.Now().Add(-24*7*time.Hour)).
 		Order("created_at ASC").
 		Find(&messages).Error
+	fmt.Println("获取离线消息成功", messages)
 	return
 }
 
