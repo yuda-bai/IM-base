@@ -1,15 +1,19 @@
 package models
 
 import (
+	"context"
 	"fmt"
+	"ginchat/common"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
 
 	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
+	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 )
 
@@ -44,9 +48,35 @@ var clientMap = make(map[int64]*Node)
 // 读写锁
 var rwLocker sync.RWMutex
 
-// SaveMessage 消息持久化 保存在数据库
+// SaveMessage 消息持久化 保存在数据库,redis缓存
 func SaveMessage(message *Message) error {
-	return DB.Create(message).Error
+	//1.写入数据库
+	if err := DB.Save(message).Error; err != nil {
+		return err
+	}
+	//2.序列化消息
+	msgJSON, err := json.Marshal(message)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	//3.写入聊天历史缓存
+	key := chatHistoryKey(message.FormId, message.TargetId)
+	Redis.ZAdd(ctx, key, redis.Z{
+		Score:  float64(message.ID),
+		Member: string(msgJSON),
+	})
+	Redis.Expire(ctx, key, common.HistoryTTL)
+	//裁剪超过500条的最早消息
+	count, _ := Redis.ZCard(ctx, key).Result()
+	if count > common.MaxCacheMessages {
+		Redis.ZRemRangeByRank(ctx, key, 0, count-common.MaxCacheMessages-1)
+	}
+	//4.写入离线消息缓存
+	offlineKey := offlineMessageKey(message.TargetId)
+	Redis.ZAdd(ctx, offlineKey, redis.Z{Score: float64(message.ID), Member: string(msgJSON)})
+	Redis.Expire(ctx, offlineKey, common.HistoryTTL)
+	return nil
 }
 
 // removeFromClientMap 安全地从 clientMap 中移除指定 userId 的连接（仅在锁外调用）
@@ -57,6 +87,20 @@ func removeFromClientMap(userId int64, reason string) {
 		delete(clientMap, userId)
 		fmt.Printf("🗑 用户%d已从clientMap移除(原因:%s),当前在线:%d人\n", userId, reason, len(clientMap))
 	}
+}
+
+// 生成聊天记录redis key,保证同一对用户生成唯一key
+func chatHistoryKey(userId, targetId int64) string {
+	ids := []int64{userId, targetId}
+	sort.Slice(ids, func(i, j int) bool {
+		return ids[i] < ids[j]
+	})
+	return fmt.Sprintf("chat:%d:%d", ids[0], ids[1])
+}
+
+// 生成离线消息redis key
+func offlineMessageKey(userId int64) string {
+	return fmt.Sprintf("offline:%d", userId)
 }
 
 func Chat(writer http.ResponseWriter, request *http.Request) {
@@ -282,16 +326,81 @@ func getOfflineMessages(userId int64, msgType int) (messages []Message, err erro
 }
 
 // GetChatHistory 获取与某个用户的聊天记录
-func GetChatHistory(userId uint, targetId int, page int, pageSize int) ([]Message, error) {
-	var messages []Message
-	err := DB.Where("form_id = ? AND target_id = ?", userId, targetId).
-		Order("created_at DESC").
-		Offset(pageSize * (page - 1)).
-		Limit(pageSize).
-		Find(&messages).Error
-	//反转数组,显示顺序为正序
+func GetChatHistory(userId uint, targetId int, page int, pageSize int) ([]Message, int64, error) {
+	ctx := context.Background()
+	key := chatHistoryKey(int64(userId), int64(targetId))
+	//1.先查询Redis总条数
+	total, err := Redis.ZCard(ctx, key).Result()
+	if err != nil || total == 0 {
+		return GetChatHistoryFromDB(userId, targetId, page, pageSize)
+	}
+	//2.redis命中,分页读取
+	start := int64(pageSize * (page - 1))
+	stop := start + int64(pageSize) - 1
+	members, err := Redis.ZRangeWithScores(ctx, key, start, stop).Result()
+	if err != nil {
+		return GetChatHistoryFromDB(userId, targetId, page, pageSize)
+	}
+	//3.反序列化
+	messages := make([]Message, 0, len(members))
+	results, err := Redis.ZRevRangeWithScores(ctx, key, 0, -1).Result()
+	if err != nil {
+		// 处理错误
+	}
+	for _, z := range results {
+		// 从 redis.Z 取出 Member 并断言为 string
+		memberStr, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		var msg Message
+		if err := json.Unmarshal([]byte(memberStr), &msg); err == nil {
+			messages = append(messages, msg)
+		}
+
+	}
+	//4.反转数组,显示顺序为正序
+
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
-	return messages, err
+	return messages, total, nil
+}
+func GetChatHistoryFromDB(userId uint, targetId int, page int, pageSize int) ([]Message, int64, error) {
+	uid := int64(userId)
+	tid := int64(targetId)
+	// 1. 查询总数（修复：双向查询）
+	var total int64
+	DB.Model(&Message{}).
+		Where("(form_id = ? AND target_id = ?) OR (form_id = ? AND target_id = ?)", uid, tid, tid, uid).
+		Count(&total)
+
+	// 2. 分页查询
+	var messages []Message
+	DB.Where("(form_id = ? AND target_id = ?) OR (form_id = ? AND target_id = ?)", uid, tid, tid, uid).
+		Order("created_at DESC").
+		Offset(pageSize * (page - 1)).
+		Limit(pageSize).
+		Find(&messages)
+
+	// 3. 反转数组为正序
+	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
+		messages[i], messages[j] = messages[j], messages[i]
+	}
+
+	// 4. 异步回写 Redis（不阻塞返回）
+	go func() {
+		ctx := context.Background()
+		key := chatHistoryKey(uid, tid)
+		for _, msg := range messages {
+			msgJSON, _ := json.Marshal(msg)
+			Redis.ZAdd(ctx, key, redis.Z{
+				Score:  float64(msg.ID),
+				Member: string(msgJSON),
+			})
+		}
+		Redis.Expire(ctx, key, common.HistoryTTL)
+	}()
+
+	return messages, total, nil
 }

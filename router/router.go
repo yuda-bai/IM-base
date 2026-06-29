@@ -29,5 +29,6 @@ func Router() *gin.Engine {
 	//上传图片
 	r.Static("uploads", "./uploads")
 	r.POST("/user/UploadImage", service.UploadImage)
+	r.POST("/user/UploadAudio", service.UploadAudio)
 	return r
 }

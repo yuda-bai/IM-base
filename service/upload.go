@@ -50,3 +50,45 @@ func UploadImage(c *gin.Context) {
 		"imagUrl": imagUrl,
 	})
 }
+
+// UploadAudio 上传语音文件
+func UploadAudio(c *gin.Context) {
+	file, err := c.FormFile("audio")
+	if err != nil {
+		common.Fail(c, "请选择音频")
+		return
+	}
+	allowedExts := map[string]bool{
+		".mp3":  true,
+		".wav":  true,
+		".ogg":  true,
+		".webm": true,
+	}
+	ext := filepath.Ext(file.Filename)
+	if !allowedExts[ext] {
+		common.Fail(c, "请上传正确的音频格式")
+		return
+	}
+	if file.Size > 1024*1024*10 {
+		common.Fail(c, "音频大小不能超过10M")
+		return
+	}
+	uploadDir := "uploads/"
+	err = os.MkdirAll(uploadDir, os.ModePerm)
+	if err != nil {
+		return
+	}
+
+	filename := fmt.Sprintf("%d_%s", time.Now().UnixNano(), ext)
+	savePath := filepath.Join(uploadDir, filename)
+
+	if err := c.SaveUploadedFile(file, savePath); err != nil {
+		fmt.Println("保存语音失败:", err)
+		common.Fail(c, "语音上传失败")
+		return
+	}
+	audio := "/uploads/" + filename
+	common.Success(c, "语音上传成功", map[string]string{
+		"audio": audio,
+	})
+}
