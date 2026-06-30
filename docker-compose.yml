@@ -4,7 +4,7 @@ services:
     container_name: ginchat-redis
     ports:
       - "16379:6379"
-    command: redis-server --requirepass 123456 --appendonly yes
+    command: redis-server --requirepass 123456 --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
     restart: unless-stopped
@@ -14,6 +14,7 @@ services:
   mysql:
     image: mysql:8.0
     container_name: ginchat-mysql
+    command: --innodb-buffer-pool-size=64M --performance-schema=OFF --max-connections=50
     ports:
       - "3306:3306"
     environment:

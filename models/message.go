@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"ginchat/common"
-	"net"
+
 	"net/http"
 	"sort"
 	"strconv"
@@ -39,7 +39,22 @@ type Node struct {
 	Conn      *websocket.Conn
 	DataQueue chan []byte
 	GroupSets map[string]interface{}
-	UserId    int64 // 用于 recvProc/sendProc 退出时按值精确清理 clientMap
+	UserId    int64     // 用于 recvProc/sendProc 退出时按值精确清理 clientMap
+	closeOnce sync.Once // 确保清理逻辑只执行一次，防止 close(DataQueue) panic
+}
+
+// Close 安全关闭节点，sync.Once 保证只执行一次
+func (n *Node) Close(reason string) {
+	n.closeOnce.Do(func() {
+		close(n.DataQueue)
+		rwLocker.Lock()
+		// 指针比较防止误删重连后的新连接
+		if existing, ok := clientMap[n.UserId]; ok && existing == n {
+			delete(clientMap, n.UserId)
+		}
+		rwLocker.Unlock()
+		fmt.Printf("🗑 用户%d已从clientMap移除(原因:%s),当前在线:%d人\n", n.UserId, reason, len(clientMap))
+	})
 }
 
 // 映射关系
@@ -48,7 +63,7 @@ var clientMap = make(map[int64]*Node)
 // 读写锁
 var rwLocker sync.RWMutex
 
-// SaveMessage 消息持久化 保存在数据库,redis缓存
+// SaveMessage 消息持久化 保存在数据库,redis缓存（使用 Pipeline 减少网络往返）
 func SaveMessage(message *Message) error {
 	//1.写入数据库
 	if err := DB.Save(message).Error; err != nil {
@@ -60,33 +75,23 @@ func SaveMessage(message *Message) error {
 		return err
 	}
 	ctx := context.Background()
-	//3.写入聊天历史缓存
 	key := chatHistoryKey(message.FormId, message.TargetId)
-	Redis.ZAdd(ctx, key, redis.Z{
-		Score:  float64(message.ID),
-		Member: string(msgJSON),
-	})
-	Redis.Expire(ctx, key, common.HistoryTTL)
-	//裁剪超过500条的最早消息
-	count, _ := Redis.ZCard(ctx, key).Result()
-	if count > common.MaxCacheMessages {
-		Redis.ZRemRangeByRank(ctx, key, 0, count-common.MaxCacheMessages-1)
-	}
-	//4.写入离线消息缓存
 	offlineKey := offlineMessageKey(message.TargetId)
-	Redis.ZAdd(ctx, offlineKey, redis.Z{Score: float64(message.ID), Member: string(msgJSON)})
-	Redis.Expire(ctx, offlineKey, common.HistoryTTL)
-	return nil
-}
 
-// removeFromClientMap 安全地从 clientMap 中移除指定 userId 的连接（仅在锁外调用）
-func removeFromClientMap(userId int64, reason string) {
-	rwLocker.Lock()
-	defer rwLocker.Unlock()
-	if _, exists := clientMap[userId]; exists {
-		delete(clientMap, userId)
-		fmt.Printf("🗑 用户%d已从clientMap移除(原因:%s),当前在线:%d人\n", userId, reason, len(clientMap))
+	//3.批量写入 Redis + 裁剪（Pipeline 合并 6 条命令为 1 次网络往返）
+	pipe := Redis.Pipeline()
+	pipe.ZAdd(ctx, key, redis.Z{Score: float64(message.ID), Member: string(msgJSON)})
+	pipe.Expire(ctx, key, common.HistoryTTL)
+	// ZRemRangeByRank: 保留最后 MaxCacheMessages 条，删除更早的（0 到 -(N+1)）
+	pipe.ZRemRangeByRank(ctx, key, 0, -(common.MaxCacheMessages + 1))
+	pipe.ZAdd(ctx, offlineKey, redis.Z{Score: float64(message.ID), Member: string(msgJSON)})
+	pipe.Expire(ctx, offlineKey, common.HistoryTTL)
+	pipe.ZRemRangeByRank(ctx, offlineKey, 0, -(common.MaxCacheMessages + 1))
+	if _, err := pipe.Exec(ctx); err != nil {
+		fmt.Println("Redis Pipeline 写入失败:", err)
 	}
+
+	return nil
 }
 
 // 生成聊天记录redis key,保证同一对用户生成唯一key
@@ -131,7 +136,7 @@ func Chat(writer http.ResponseWriter, request *http.Request) {
 	if oldNode, exists := clientMap[userId]; exists {
 		fmt.Printf("⚠️ 用户%d重新连接,关闭旧链接并替换为新连接\n", userId)
 		oldNode.Conn.Close()
-		close(oldNode.DataQueue)
+		oldNode.Close("重复登录替换") // sync.Once 安全关闭 DataQueue 并清理 clientMap
 	}
 	clientMap[userId] = node
 	rwLocker.Unlock()
@@ -154,7 +159,7 @@ func Chat(writer http.ResponseWriter, request *http.Request) {
 
 // 发送消息到客户端
 func sendProc(node *Node) {
-	defer removeFromClientMap(node.UserId, "sendProc退出")
+	defer node.Close("sendProc退出") // sync.Once 保证只清理一次
 	for data := range node.DataQueue {
 		err := node.Conn.WriteMessage(websocket.TextMessage, data)
 		if err != nil {
@@ -168,7 +173,7 @@ func sendProc(node *Node) {
 
 // 发送离线消息
 func sendOfflineMessages(userId int64) {
-	messages, err := getOfflineMessages(userId, 1)
+	messages, err := getOfflineMessages(userId)
 	if err != nil {
 		fmt.Println("获取离线消息错误", err)
 		return
@@ -177,6 +182,7 @@ func sendOfflineMessages(userId int64) {
 		return
 	}
 	fmt.Printf("发送离线消息一共%d给用户%d\n", len(messages), userId)
+	ids := make([]uint, 0, len(messages))
 	for _, message := range messages {
 		msgData := map[string]interface{}{
 			"userId":    message.FormId,
@@ -192,6 +198,7 @@ func sendOfflineMessages(userId int64) {
 			"isOffline": true,
 		}
 		jsonData, err := json.Marshal(msgData)
+		ids = append(ids, message.ID)
 		if err != nil {
 			fmt.Println("离线消息json解析错误:", err)
 			continue
@@ -201,76 +208,19 @@ func sendOfflineMessages(userId int64) {
 	fmt.Printf("已发送 %d 条离线消息给用户 %d\n", len(messages), userId)
 }
 
-// 接收客户端消息
+// 接收客户端消息（含心跳超时检测）
 func recvProc(node *Node) {
-	defer func() {
-		// ★ 关键：连接断开时清理 clientMap，使用 UserId 而不是指针比较
-		removeFromClientMap(node.UserId, "recvProc连接断开")
-	}()
+	defer node.Close("recvProc连接断开") // sync.Once 保证只清理一次（同时关闭 DataQueue 唤醒 sendProc）
 	for {
+		// 心跳检测：60秒无消息则判定连接僵死
+		_ = node.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		_, data, err := node.Conn.ReadMessage()
 		if err != nil {
 			fmt.Printf("接收消息错误 userId=%d: %v\n", node.UserId, err)
-			return // defer 会自动清理
+			return // defer 会自动清理 DataQueue 和 clientMap
 		}
-		broadMsg(data)
 		Dispatch(data)
 		fmt.Printf("recvProc<<< [ws] userId=%d 接收消息成功: %s\n", node.UserId, string(data))
-	}
-}
-
-var udpsendChan = make(chan []byte, 1024)
-
-func broadMsg(data []byte) {
-	udpsendChan <- data
-}
-func init() {
-	go udpSendProc()
-	go udpRecvProc()
-}
-
-// 完成udp数据发送协程
-func udpSendProc() {
-	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{
-		IP:   net.ParseIP("192.168.1.100"),
-		Port: 8081,
-	})
-	if err != nil {
-		fmt.Println("udp连接错误", err)
-		return
-	}
-	defer conn.Close()
-	for {
-		select {
-		case data := <-udpsendChan:
-			_, err := conn.Write(data)
-			if err != nil {
-				fmt.Println("udp发送错误", err)
-				return
-			}
-		}
-	}
-}
-
-// 完成udp数据接收协程
-func udpRecvProc() {
-	con, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   net.ParseIP("0.0.0.0"),
-		Port: 8081,
-	})
-	if err != nil {
-		fmt.Println("udp监听错误", err)
-		return
-	}
-	defer con.Close()
-	for {
-		var buf [1024]byte
-		n, err := con.Read(buf[0:])
-		if err != nil {
-			fmt.Println("udp接收错误", err)
-			return
-		}
-		fmt.Println("[udp] 接收数据成功", string(buf[:n]))
 	}
 }
 
@@ -296,6 +246,8 @@ func Dispatch(data []byte) {
 		//单聊
 		sendMsg(msg.TargetId, data)
 		sendMsg(msg.FormId, data) //发送端接收回显
+	case 2:
+		//群聊：TODO 从群组获取成员列表并广播
 	}
 }
 
@@ -317,12 +269,29 @@ func sendMsg(userID int64, msg []byte) {
 }
 
 // 获取用户的离线消息
-func getOfflineMessages(userId int64, msgType int) (messages []Message, err error) {
-	err = DB.Where("target_id = ? AND type = ? AND created_at > ?", userId, msgType, time.Now().Add(-24*7*time.Hour)).
-		Order("created_at ASC").
+func getOfflineMessages(userId int64) (messages []Message, err error) {
+	ctx := context.Background()
+	offlineKey := offlineMessageKey(userId)
+
+	//1.先从Redis中获取
+	members, err := Redis.ZRange(ctx, offlineKey, 0, common.MaxCacheMessages-1).Result()
+	if err == nil && len(members) > 0 {
+		for _, member := range members {
+			var msg Message
+			if json.Unmarshal([]byte(member), &msg) == nil {
+				messages = append(messages, msg)
+			}
+		}
+		//推送后清空Redis
+		Redis.Del(ctx, offlineKey)
+		return messages, nil
+	}
+	//2.Redis未命中,从DB中获取（限制条数防止内存爆炸）
+	err = DB.Where("target_id = ? AND is_offline = ? AND created_at > ?", userId, true,
+		time.Now().Add(-7*24*time.Hour)).
+		Limit(common.MaxCacheMessages).
 		Find(&messages).Error
-	fmt.Println("获取离线消息成功", messages)
-	return
+	return messages, err
 }
 
 // GetChatHistory 获取与某个用户的聊天记录
@@ -341,14 +310,9 @@ func GetChatHistory(userId uint, targetId int, page int, pageSize int) ([]Messag
 	if err != nil {
 		return GetChatHistoryFromDB(userId, targetId, page, pageSize)
 	}
-	//3.反序列化
+	//3.反序列化（members 已是分页后的正序数据，无需全量拉取）
 	messages := make([]Message, 0, len(members))
-	results, err := Redis.ZRevRangeWithScores(ctx, key, 0, -1).Result()
-	if err != nil {
-		// 处理错误
-	}
-	for _, z := range results {
-		// 从 redis.Z 取出 Member 并断言为 string
+	for _, z := range members {
 		memberStr, ok := z.Member.(string)
 		if !ok {
 			continue
@@ -357,15 +321,10 @@ func GetChatHistory(userId uint, targetId int, page int, pageSize int) ([]Messag
 		if err := json.Unmarshal([]byte(memberStr), &msg); err == nil {
 			messages = append(messages, msg)
 		}
-
-	}
-	//4.反转数组,显示顺序为正序
-
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
 	}
 	return messages, total, nil
 }
+
 func GetChatHistoryFromDB(userId uint, targetId int, page int, pageSize int) ([]Message, int64, error) {
 	uid := int64(userId)
 	tid := int64(targetId)
@@ -388,19 +347,23 @@ func GetChatHistoryFromDB(userId uint, targetId int, page int, pageSize int) ([]
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 
-	// 4. 异步回写 Redis（不阻塞返回）
-	go func() {
+	// 4. 同步回写 Redis（使用 Pipeline 批量写入，避免逐条网络往返）
+	if len(messages) > 0 {
 		ctx := context.Background()
 		key := chatHistoryKey(uid, tid)
+		pipe := Redis.Pipeline()
 		for _, msg := range messages {
 			msgJSON, _ := json.Marshal(msg)
-			Redis.ZAdd(ctx, key, redis.Z{
+			pipe.ZAdd(ctx, key, redis.Z{
 				Score:  float64(msg.ID),
 				Member: string(msgJSON),
 			})
 		}
-		Redis.Expire(ctx, key, common.HistoryTTL)
-	}()
+		pipe.Expire(ctx, key, common.HistoryTTL)
+		if _, err := pipe.Exec(ctx); err != nil {
+			fmt.Println("Redis Pipeline 回写失败:", err)
+		}
+	}
 
 	return messages, total, nil
 }

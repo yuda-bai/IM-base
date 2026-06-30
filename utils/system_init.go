@@ -32,8 +32,8 @@ func InitMySQL() {
 		log.New(os.Stdout, "\r\n", log.LstdFlags), // io writer
 		logger.Config{
 			SlowThreshold: time.Second, // 慢 SQL 阈值
-			LogLevel:      logger.Info, // Log level
-			Colorful:      true,        // 禁用彩色打印
+			LogLevel:      logger.Warn, // 只输出慢查询和错误，避免日志撑爆控制台/内存
+			Colorful:      false,       // 生产环境关闭彩色输出
 		},
 	)
 	dsn := viper.GetString("mysql.dns")
@@ -65,6 +65,12 @@ func InitMySQL() {
 		panic("数据库 Ping 失败: " + err.Error())
 	}
 	fmt.Println("数据库连接验证成功")
+
+	// ★ 限制连接池，防止高并发 WebSocket 时无限创建连接导致内存爆炸
+	sqlDB.SetMaxOpenConns(25)                 // 最大打开连接数
+	sqlDB.SetMaxIdleConns(10)                 // 最大空闲连接数
+	sqlDB.SetConnMaxLifetime(5 * time.Minute) // 连接最大存活时间
+	fmt.Println("数据库连接池已配置: MaxOpen=25 MaxIdle=10")
 
 	if err := models.DB.AutoMigrate(&models.UserBasic{}, &models.Contact{}, &models.Message{}); err != nil {
 		panic("数据表迁移失败: " + err.Error())

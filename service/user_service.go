@@ -288,7 +288,7 @@ func GetChatRecord(c *gin.Context) {
 	targetId, _ := strconv.Atoi(c.PostForm("targetId"))
 	page, _ := strconv.Atoi(c.PostForm("page"))
 	pageSize, _ := strconv.Atoi(c.PostForm("pageSize"))
-	messages, err := models.GetChatHistory(user.ID, targetId, page, pageSize)
+	messages, _, err := models.GetChatHistory(user.ID, targetId, page, pageSize)
 	fmt.Println(messages)
 	if err != nil {
 		common.Fail(c, "获取失败")
