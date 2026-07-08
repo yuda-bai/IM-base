@@ -17,7 +17,19 @@ import (
 )
 
 func InitConfig() {
-	viper.SetConfigName("app")
+	// 通过环境变量 GINCHAT_ENV 切换环境配置
+	// GINCHAT_ENV=docker  → 加载 config/app.docker.yml（容器内用服务名）
+	// 不设或设为 dev      → 加载 config/app.yml（本地开发用 127.0.0.1）
+	env := os.Getenv("GINCHAT_ENV")
+	configName := "app"
+	if env == "docker" {
+		configName = "app.docker"
+		fmt.Println("📦 当前环境: Docker (使用容器服务名)")
+	} else {
+		fmt.Println("🖥️  当前环境: 本地开发 (使用 127.0.0.1)")
+	}
+
+	viper.SetConfigName(configName)
 	viper.SetConfigType("yml")
 	viper.AddConfigPath("config")
 	viper.AddConfigPath("../config") // 从 test/ 等子目录运行时也能找到配置
@@ -98,24 +110,4 @@ func InitRedis() {
 		panic("连接 Redis 失败: " + err.Error())
 	}
 	fmt.Println("Redis 连接验证成功")
-}
-
-const (
-	PublishKey = "websocket"
-)
-
-// Publish 发布消息到Redis
-func Publish(ctx context.Context, channel string, message string) error {
-	var err error
-	err = models.Redis.Publish(ctx, channel, message).Err()
-	fmt.Println("发布消息")
-	return err
-}
-
-// Subscribe 订阅Redis消息
-func Subscribe(ctx context.Context, channel string) (string, error) {
-	sub := models.Redis.PSubscribe(ctx, channel)
-	fmt.Println("订阅成功")
-	msg, err := sub.ReceiveMessage(ctx)
-	return msg.Payload, err
 }

@@ -1,6 +1,7 @@
 package router
 
 import (
+	"ginchat/models"
 	"ginchat/service"
 
 	"github.com/gin-gonic/gin"
@@ -22,7 +23,8 @@ func Router() *gin.Engine {
 	r.POST("/user/FindUserByNameAndPassword", service.FindUserByNameAndPassword)
 	r.GET("/user/SearchFriend", service.SearchFriend)
 	r.POST("/user/AddFriend", service.AddFriend)
-	r.POST("/user/GetChatRecord", service.GetChatRecord)
+	r.GET("/user/GetChatRecord", models.GetChatRecord)
+	r.POST("/user/MarkMessagesRead", service.MarkMessagesRead)
 	//发送消息
 	r.GET("/user/SendMsg", service.SendMsg)
 	r.GET("/user/SendUserMsg", service.SendUserMsg)

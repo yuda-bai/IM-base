@@ -1,0 +1,34 @@
+# 前端
+frontend/
+node_modules/
+
+# 文档
+docs/
+*.md
+*.docx
+*.pdf
+
+# 版本控制
+.git/
+.gitignore
+
+# Python 虚拟环境
+.venv/
+
+# Go
+*.exe
+*.test
+*.out
+
+# 临时文件
+bash.exe.stackdump
+*.stackdump
+test/
+sql/
+
+# 上传文件（由 volume 挂载）
+uploads/
+
+# IDE
+.idea/
+.vscode/

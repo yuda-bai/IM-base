@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -76,7 +77,7 @@ func SaveMessage(message *Message) error {
 	}
 	ctx := context.Background()
 	key := chatHistoryKey(message.FormId, message.TargetId)
-	offlineKey := offlineMessageKey(message.TargetId)
+	offlineKey := OfflineMessageKey(message.TargetId)
 
 	//3.批量写入 Redis + 裁剪（Pipeline 合并 6 条命令为 1 次网络往返）
 	pipe := Redis.Pipeline()
@@ -103,8 +104,8 @@ func chatHistoryKey(userId, targetId int64) string {
 	return fmt.Sprintf("chat:%d:%d", ids[0], ids[1])
 }
 
-// 生成离线消息redis key
-func offlineMessageKey(userId int64) string {
+// OfflineMessageKey 生成离线消息redis key
+func OfflineMessageKey(userId int64) string {
 	return fmt.Sprintf("offline:%d", userId)
 }
 
@@ -203,8 +204,16 @@ func sendOfflineMessages(userId int64) {
 			fmt.Println("离线消息json解析错误:", err)
 			continue
 		}
+		//兼容群聊:type=2
+		if message.Type == 2 {
+			err := Redis.Publish(context.Background(), common.PublishKey, string(jsonData)).Err()
+			if err != nil {
+				return
+			}
+		}
 		sendMsg(userId, jsonData)
 	}
+	DB.Model(&Message{}).Where("id IN ?", ids).Update("is_read", false)
 	fmt.Printf("已发送 %d 条离线消息给用户 %d\n", len(messages), userId)
 }
 
@@ -247,7 +256,18 @@ func Dispatch(data []byte) {
 		sendMsg(msg.TargetId, data)
 		sendMsg(msg.FormId, data) //发送端接收回显
 	case 2:
-		//群聊：TODO 从群组获取成员列表并广播
+		//群聊
+		err := Redis.Publish(context.Background(), common.PublishKey, string(data)).Err()
+		if err != nil {
+			return
+		}
+	case 3:
+		//广播
+		err := Redis.Publish(context.Background(), common.PublishKey, string(data)).Err()
+		if err != nil {
+			return
+		}
+
 	}
 }
 
@@ -271,7 +291,7 @@ func sendMsg(userID int64, msg []byte) {
 // 获取用户的离线消息
 func getOfflineMessages(userId int64) (messages []Message, err error) {
 	ctx := context.Background()
-	offlineKey := offlineMessageKey(userId)
+	offlineKey := OfflineMessageKey(userId)
 
 	//1.先从Redis中获取
 	members, err := Redis.ZRange(ctx, offlineKey, 0, common.MaxCacheMessages-1).Result()
@@ -366,4 +386,40 @@ func GetChatHistoryFromDB(userId uint, targetId int, page int, pageSize int) ([]
 	}
 
 	return messages, total, nil
+}
+func GetChatRecord(c *gin.Context) {
+	// 兼容 GET query 和 POST form
+	userIdStr := c.Query("userId")
+	if userIdStr == "" {
+		userIdStr = c.PostForm("userId")
+	}
+	targetIdStr := c.Query("targetId")
+	if targetIdStr == "" {
+		targetIdStr = c.PostForm("targetId")
+	}
+	pageStr := c.DefaultQuery("page", "1")
+	if pageStr == "1" {
+		pageStr = c.DefaultPostForm("page", "1")
+	}
+	pageSizeStr := c.DefaultQuery("pageSize", "20")
+	if pageSizeStr == "20" {
+		pageSizeStr = c.DefaultPostForm("pageSize", "20")
+	}
+
+	userId, _ := strconv.Atoi(userIdStr)
+	targetId, _ := strconv.Atoi(targetIdStr)
+	page, _ := strconv.Atoi(pageStr)
+	pageSize, _ := strconv.Atoi(pageSizeStr)
+
+	if pageSize > 50 {
+		pageSize = 50 // 单页上限
+	}
+
+	messages, total, err := GetChatHistory(uint(userId), targetId, page, pageSize)
+	if err != nil {
+		common.Fail(c, "获取聊天记录失败")
+		return
+	}
+
+	common.SuccessWithPagination(c, "获取成功", messages, total, page)
 }
