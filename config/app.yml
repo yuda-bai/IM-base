@@ -1,3 +1,4 @@
+# 本地开发环境配置（Windows 直接运行）
 mysql:
   dns: "root:123456@tcp(127.0.0.1:3306)/ginchat?charset=utf8mb4&parseTime=True&loc=Local"
 redis:

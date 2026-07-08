@@ -1,25 +1,55 @@
 services:
+  # ==================== Go 后端 ====================
+  ginchat:
+    build: .
+    container_name: ginchat-app
+    environment:
+      - GINCHAT_ENV=docker
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./uploads:/app/uploads
+    depends_on:
+      redis:
+        condition: service_started
+      mysql:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - ginchat-network
+
+  # ==================== Redis 缓存 ====================
   redis:
     image: redis:7-alpine
     container_name: ginchat-redis
-    ports:
-      - "16379:6379"
-    command: redis-server --requirepass 123456 --appendonly yes --maxmemory 64mb --maxmemory-policy allkeys-lru
+    command: >
+      redis-server
+      --requirepass 123456
+      --appendonly yes
+      --maxmemory 128mb
+      --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
     restart: unless-stopped
     networks:
       - ginchat-network
 
+  # ==================== MySQL 数据库 ====================
   mysql:
     image: mysql:8.0
     container_name: ginchat-mysql
-    command: --innodb-buffer-pool-size=64M --performance-schema=OFF --max-connections=50
+    command: >
+      --innodb-buffer-pool-size=128M
+      --performance-schema=OFF
+      --max-connections=100
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_unicode_ci
     ports:
       - "3306:3306"
     environment:
       MYSQL_ROOT_PASSWORD: 123456
       MYSQL_DATABASE: ginchat
+      TZ: Asia/Shanghai
     volumes:
       - mysql-data:/var/lib/mysql
     restart: unless-stopped

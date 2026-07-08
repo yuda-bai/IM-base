@@ -37,6 +37,13 @@ func FindUserByName(name string) UserBasic {
 	return user
 }
 
+// FindUserByID 通过用户ID查找用户
+func FindUserByID(id uint) UserBasic {
+	user := UserBasic{}
+	DB.Where("id = ?", id).First(&user)
+	return user
+}
+
 // FindUserByNameAndPassword 通过用户名和密码查找用户
 func FindUserByNameAndPassword(name string, password string) UserBasic {
 	user := UserBasic{}
@@ -62,7 +69,7 @@ func (table *UserBasic) TableName() string {
 	return "user_basic"
 }
 func GetUserList() []*UserBasic {
-	date := make([]*UserBasic, 10)
+	var date []*UserBasic
 	DB.Find(&date)
 	for _, v := range date {
 		fmt.Println(v)

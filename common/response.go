@@ -30,3 +30,23 @@ func Fail(c *gin.Context, message string) {
 		Data:    nil,
 	})
 }
+
+// PaginatedData 分页数据结构
+type PaginatedData struct {
+	List  interface{} `json:"list"`  // 数据列表
+	Total int64       `json:"total"` // 总条数
+	Page  int         `json:"page"`  // 当前页码
+}
+
+// SuccessWithPagination 带分页信息的成功响应
+func SuccessWithPagination(c *gin.Context, message string, list interface{}, total int64, page int) {
+	c.JSON(http.StatusOK, Response{
+		Code:    0,
+		Message: message,
+		Data: PaginatedData{
+			List:  list,
+			Total: total,
+			Page:  page,
+		},
+	})
+}

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"ginchat/common"
 	"ginchat/models"
@@ -159,7 +160,7 @@ func SendMsg(c *gin.Context) {
 }
 func MsgHandler(ws *websocket.Conn, c *gin.Context) {
 	// 订阅Redis频道
-	sub := models.Redis.Subscribe(c, utils.PublishKey)
+	sub := models.Redis.Subscribe(c, common.PublishKey)
 	defer sub.Close()
 	fmt.Println("订阅成功")
 
@@ -168,7 +169,7 @@ func MsgHandler(ws *websocket.Conn, c *gin.Context) {
 
 	// 发送欢迎消息到Redis，通过Pub/Sub广播给所有客户端
 	welcomeMsg := `{"userId":0,"userName":"系统","content":"欢迎来到聊天室！","type":"system","messageId":"0"}`
-	utils.Publish(c, utils.PublishKey, welcomeMsg)
+	models.Redis.Publish(c, common.PublishKey, welcomeMsg).Err()
 
 	// 启动goroutine读取WebSocket客户端消息
 	wsMsgCh := make(chan []byte)
@@ -194,7 +195,7 @@ func MsgHandler(ws *websocket.Conn, c *gin.Context) {
 			//保存消息到数据库
 			models.Dispatch(msg)
 			// 将客户端消息发布到Redis
-			err := utils.Publish(c, utils.PublishKey, string(msg))
+			err := models.Redis.Publish(c, common.PublishKey, string(msg)).Err()
 			if err != nil {
 				fmt.Println("发布消息失败:", err)
 			}
@@ -295,4 +296,23 @@ func GetChatRecord(c *gin.Context) {
 		return
 	}
 	common.Success(c, "获取成功", messages)
+}
+
+// MarkMessagesRead 标记消息为已读（打开聊天窗口时调用）
+// POST /user/MarkRead
+func MarkMessagesRead(c *gin.Context) {
+	userId := c.PostForm("userId")
+	targetId := c.PostForm("targetId")
+
+	// 更新数据库
+	models.DB.Model(&models.Message{}).
+		Where("target_id = ? AND form_id = ? AND is_offline = ?", userId, targetId, true).
+		Update("is_offline", false)
+
+	// 清理 Redis 离线缓存
+	ctx := context.Background()
+	uid, _ := strconv.ParseInt(userId, 10, 64)
+	models.Redis.Del(ctx, models.OfflineMessageKey(uid))
+
+	common.Success(c, "标记成功", nil)
 }

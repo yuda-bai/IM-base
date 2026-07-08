@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/goccy/go-json"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
@@ -19,16 +20,16 @@ import (
 
 type Message struct {
 	gorm.Model
-	FormId    int64  //发送者id
-	TargetId  int64  //接收者id
-	Type      int    //消息类型 1私聊  2群聊 3广播
-	Media     string //消息媒体类型 1 文本 2表情包 3 图片 4 音频
-	Content   string //消息内容
-	Pic       string //图片
-	Url       string //链接
-	Desc      string //描述
-	IsOffline bool   //是否离线消息
-	Amount    int    //其他数字统计
+	FormId    int64  `json:"FormId"`    //发送者id
+	TargetId  int64  `json:"TargetId"`  //接收者id
+	Type      int    `json:"Type"`      //消息类型 1私聊  2群聊 3广播
+	Media     string `json:"Media"`     //消息媒体类型 1 文本 2表情包 3 图片 4 音频
+	Content   string `json:"Content"`   //消息内容
+	Pic       string `json:"Pic"`       //图片
+	Url       string `json:"Url"`       //链接
+	Desc      string `json:"Desc"`      //描述
+	IsOffline bool   `json:"IsOffline"` //是否离线消息
+	Amount    int    `json:"Amount"`    //其他数字统计
 }
 
 func (table *Message) TableName() string {
@@ -46,6 +47,8 @@ type Node struct {
 // Close 安全关闭节点，sync.Once 保证只执行一次
 func (n *Node) Close(reason string) {
 	n.closeOnce.Do(func() {
+		// ★ 先关闭 WebSocket 连接 → 浏览器 onclose 立即触发，避免前端误以为还在连接
+		n.Conn.Close()
 		close(n.DataQueue)
 		rwLocker.Lock()
 		// 指针比较防止误删重连后的新连接
@@ -65,10 +68,13 @@ var rwLocker sync.RWMutex
 
 // SaveMessage 消息持久化 保存在数据库,redis缓存（使用 Pipeline 减少网络往返）
 func SaveMessage(message *Message) error {
-	//1.写入数据库
-	if err := DB.Save(message).Error; err != nil {
+	//1.写入数据库（Create 用于新增记录，比 Save 更明确）
+	if err := DB.Create(message).Error; err != nil {
+		fmt.Println("❌ 保存消息到数据库失败:", err)
 		return err
 	}
+	fmt.Printf("💾 消息已入库: ID=%d FormId=%d TargetId=%d Type=%d Content=%s\n",
+		message.ID, message.FormId, message.TargetId, message.Type, message.Content)
 	//2.序列化消息
 	msgJSON, err := json.Marshal(message)
 	if err != nil {
@@ -76,7 +82,7 @@ func SaveMessage(message *Message) error {
 	}
 	ctx := context.Background()
 	key := chatHistoryKey(message.FormId, message.TargetId)
-	offlineKey := offlineMessageKey(message.TargetId)
+	offlineKey := OfflineMessageKey(message.TargetId)
 
 	//3.批量写入 Redis + 裁剪（Pipeline 合并 6 条命令为 1 次网络往返）
 	pipe := Redis.Pipeline()
@@ -103,8 +109,8 @@ func chatHistoryKey(userId, targetId int64) string {
 	return fmt.Sprintf("chat:%d:%d", ids[0], ids[1])
 }
 
-// 生成离线消息redis key
-func offlineMessageKey(userId int64) string {
+// OfflineMessageKey 生成离线消息redis key
+func OfflineMessageKey(userId int64) string {
 	return fmt.Sprintf("offline:%d", userId)
 }
 
@@ -141,6 +147,27 @@ func Chat(writer http.ResponseWriter, request *http.Request) {
 	clientMap[userId] = node
 	rwLocker.Unlock()
 	fmt.Printf("✅ 用户%d已注册到clientMap,当前在线:%d人\n", userId, len(clientMap))
+
+	// ★ 配置 Ping/Pong 心跳 — 30s 发一次 Ping，90s 无 Pong 则判死
+	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		return nil
+	})
+	// 心跳 goroutine（node 退出时自动停止）
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return // 连接已死，退出
+				}
+			}
+		}
+	}()
+
 	//5.完成发送逻辑
 	go sendProc(node)
 	//6.完成接收逻辑
@@ -171,7 +198,7 @@ func sendProc(node *Node) {
 	fmt.Printf("sendProc 退出:DataQueue已关闭 userId=%d\n", node.UserId)
 }
 
-// 发送离线消息
+// sendOfflineMessages 发送离线消息给刚上线的用户
 func sendOfflineMessages(userId int64) {
 	messages, err := getOfflineMessages(userId)
 	if err != nil {
@@ -181,14 +208,22 @@ func sendOfflineMessages(userId int64) {
 	if len(messages) == 0 {
 		return
 	}
-	fmt.Printf("发送离线消息一共%d给用户%d\n", len(messages), userId)
+	fmt.Printf("📬 发送离线消息一共%d条给用户%d\n", len(messages), userId)
 	ids := make([]uint, 0, len(messages))
 	for _, message := range messages {
+		// 从数据库查发送者的真实用户名
+		senderName := "用户"
+		if message.FormId > 0 {
+			sender := FindUserByID(uint(message.FormId))
+			if sender.Name != "" {
+				senderName = sender.Name
+			}
+		}
 		msgData := map[string]interface{}{
 			"userId":    message.FormId,
 			"targetId":  message.TargetId,
 			"type":      message.Type,
-			"userName":  "用户",
+			"userName":  senderName,
 			"content":   message.Content,
 			"pic":       message.Pic,
 			"url":       message.Url,
@@ -203,17 +238,24 @@ func sendOfflineMessages(userId int64) {
 			fmt.Println("离线消息json解析错误:", err)
 			continue
 		}
+		//兼容群聊:type=2
+		if message.Type == 2 {
+			err := Redis.Publish(context.Background(), common.PublishKey, string(jsonData)).Err()
+			if err != nil {
+				return
+			}
+		}
 		sendMsg(userId, jsonData)
 	}
-	fmt.Printf("已发送 %d 条离线消息给用户 %d\n", len(messages), userId)
+	// 将已发送的离线消息标记为非离线
+	DB.Model(&Message{}).Where("id IN ?", ids).Update("is_offline", false)
+	fmt.Printf("✅ 已发送 %d 条离线消息给用户 %d\n", len(messages), userId)
 }
 
 // 接收客户端消息（含心跳超时检测）
 func recvProc(node *Node) {
 	defer node.Close("recvProc连接断开") // sync.Once 保证只清理一次（同时关闭 DataQueue 唤醒 sendProc）
 	for {
-		// 心跳检测：60秒无消息则判定连接僵死
-		_ = node.Conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		_, data, err := node.Conn.ReadMessage()
 		if err != nil {
 			fmt.Printf("接收消息错误 userId=%d: %v\n", node.UserId, err)
@@ -232,11 +274,10 @@ func Dispatch(data []byte) {
 		fmt.Println("Dispatch json解析错误:", err)
 		return
 	}
-	//保存消息到数据库
+	//保存消息到数据库,DB写入独立处理,失败不阻塞投递
 	if msg.Type == 1 || msg.Type == 3 || msg.Type == 2 {
 		if err := SaveMessage(&msg); err != nil {
 			fmt.Println("保存消息失败:", err, "原始数据:", string(data))
-			return
 		}
 		fmt.Printf("保存消息成功: ID=%d FormId=%d TargetId=%d Type=%d Content=%s\n",
 			msg.ID, msg.FormId, msg.TargetId, msg.Type, msg.Content)
@@ -247,7 +288,18 @@ func Dispatch(data []byte) {
 		sendMsg(msg.TargetId, data)
 		sendMsg(msg.FormId, data) //发送端接收回显
 	case 2:
-		//群聊：TODO 从群组获取成员列表并广播
+		//群聊
+		err := Redis.Publish(context.Background(), common.PublishKey, string(data)).Err()
+		if err != nil {
+			return
+		}
+	case 3:
+		//广播
+		err := Redis.Publish(context.Background(), common.PublishKey, string(data)).Err()
+		if err != nil {
+			return
+		}
+
 	}
 }
 
@@ -271,7 +323,7 @@ func sendMsg(userID int64, msg []byte) {
 // 获取用户的离线消息
 func getOfflineMessages(userId int64) (messages []Message, err error) {
 	ctx := context.Background()
-	offlineKey := offlineMessageKey(userId)
+	offlineKey := OfflineMessageKey(userId)
 
 	//1.先从Redis中获取
 	members, err := Redis.ZRange(ctx, offlineKey, 0, common.MaxCacheMessages-1).Result()
@@ -366,4 +418,40 @@ func GetChatHistoryFromDB(userId uint, targetId int, page int, pageSize int) ([]
 	}
 
 	return messages, total, nil
+}
+func GetChatRecord(c *gin.Context) {
+	// 兼容 GET query 和 POST form
+	userIdStr := c.Query("userId")
+	if userIdStr == "" {
+		userIdStr = c.PostForm("userId")
+	}
+	targetIdStr := c.Query("targetId")
+	if targetIdStr == "" {
+		targetIdStr = c.PostForm("targetId")
+	}
+	pageStr := c.DefaultQuery("page", "1")
+	if pageStr == "1" {
+		pageStr = c.DefaultPostForm("page", "1")
+	}
+	pageSizeStr := c.DefaultQuery("pageSize", "20")
+	if pageSizeStr == "20" {
+		pageSizeStr = c.DefaultPostForm("pageSize", "20")
+	}
+
+	userId, _ := strconv.Atoi(userIdStr)
+	targetId, _ := strconv.Atoi(targetIdStr)
+	page, _ := strconv.Atoi(pageStr)
+	pageSize, _ := strconv.Atoi(pageSizeStr)
+
+	if pageSize > 50 {
+		pageSize = 50 // 单页上限
+	}
+
+	messages, total, err := GetChatHistory(uint(userId), targetId, page, pageSize)
+	if err != nil {
+		common.Fail(c, "获取聊天记录失败")
+		return
+	}
+
+	common.SuccessWithPagination(c, "获取成功", messages, total, page)
 }
