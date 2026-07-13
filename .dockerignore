@@ -2,8 +2,7 @@
 frontend/
 node_modules/
 
-# 文档
-docs/
+# docs/ 不能排除 — 包含 swagger (docs.go/swagger.json)，Go 编译必须
 *.md
 *.docx
 *.pdf
