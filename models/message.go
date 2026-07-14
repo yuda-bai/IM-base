@@ -114,6 +114,29 @@ func OfflineMessageKey(userId int64) string {
 	return fmt.Sprintf("offline:%d", userId)
 }
 
+// SendMessageViaHTTP 通过 HTTP POST 发送消息（可靠备用通道）
+func SendMessageViaHTTP(formId, targetId int64, content string, msgType int, media, pic string) (*Message, error) {
+	msg := Message{
+		FormId:   formId,
+		TargetId: targetId,
+		Type:     msgType,
+		Content:  content,
+		Media:    media,
+		Pic:      pic,
+	}
+	if err := SaveMessage(&msg); err != nil {
+		return nil, err
+	}
+	fmt.Printf("HTTP保存消息成功: ID=%d FormId=%d TargetId=%d Type=%d Content=%s\n",
+		msg.ID, msg.FormId, msg.TargetId, msg.Type, msg.Content)
+
+	// 通过 WebSocket 推送（如果目标在线）
+	data, _ := json.Marshal(&msg)
+	sendMsg(targetId, data)
+	sendMsg(formId, data) // 发送端回显
+	return &msg, nil
+}
+
 func Chat(writer http.ResponseWriter, request *http.Request) {
 	//校验合法性
 	query := request.URL.Query()
@@ -148,21 +171,23 @@ func Chat(writer http.ResponseWriter, request *http.Request) {
 	rwLocker.Unlock()
 	fmt.Printf("✅ 用户%d已注册到clientMap,当前在线:%d人\n", userId, len(clientMap))
 
-	// ★ 配置 Ping/Pong 心跳 — 30s 发一次 Ping，90s 无 Pong 则判死
-	conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+	// ★ 配置 Ping/Pong 心跳 — 15s 发一次 Ping，45s 无 Pong 则判死
+	conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(90 * time.Second))
+		conn.SetReadDeadline(time.Now().Add(45 * time.Second))
 		return nil
 	})
-	// 心跳 goroutine（node 退出时自动停止）
+	// 心跳 goroutine — ping 失败时主动清理 node
 	go func() {
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(15 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
 				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-					return // 连接已死，退出
+					fmt.Printf("💔 用户%d心跳失败: %v\n", userId, err)
+					node.Close("心跳超时")
+					return
 				}
 			}
 		}

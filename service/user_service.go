@@ -217,6 +217,36 @@ func SendUserMsg(c *gin.Context) {
 	models.Chat(c.Writer, c.Request)
 }
 
+// SendMessageHttp 通过 HTTP POST 发送消息（可靠备用通道）
+func SendMessageHttp(c *gin.Context) {
+	var req struct {
+		FormId   int64  `json:"FormId" form:"FormId"`
+		TargetId int64  `json:"targetId" form:"targetId"`
+		Content  string `json:"content" form:"content"`
+		Type     int    `json:"type" form:"type"`
+		Media    string `json:"media" form:"media"`
+		Pic      string `json:"pic" form:"pic"`
+	}
+	if err := c.ShouldBind(&req); err != nil {
+		common.Fail(c, "参数错误: "+err.Error())
+		return
+	}
+	if req.Type == 0 {
+		req.Type = 1
+	}
+	if req.Media == "" {
+		req.Media = "1"
+	}
+
+	msg, err := models.SendMessageViaHTTP(req.FormId, req.TargetId, req.Content, req.Type, req.Media, req.Pic)
+	if err != nil {
+		fmt.Println("HTTP发送消息失败:", err)
+		common.Fail(c, "发送失败")
+		return
+	}
+	common.Success(c, "发送成功", msg)
+}
+
 // SearchFriend 获取好友列表
 // @Summary      获取好友列表
 // @Tags         用户管理
