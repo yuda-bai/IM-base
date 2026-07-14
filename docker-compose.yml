@@ -24,7 +24,7 @@ services:
     container_name: ginchat-redis
     command: >
       redis-server
-      --requirepass 123456
+      --requirepass ${REDIS_PASSWORD:-changeme}
       --appendonly yes
       --maxmemory 128mb
       --maxmemory-policy allkeys-lru
@@ -47,7 +47,7 @@ services:
     ports:
       - "3306:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-changeme}
       MYSQL_DATABASE: ginchat
       TZ: Asia/Shanghai
     volumes:

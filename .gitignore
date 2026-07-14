@@ -35,6 +35,11 @@ Thumbs.db
 .deploy/
 ginchat-deploy-*.tar.gz
 
+# Config files (contains real passwords — keep out of git)
+config/app.yml
+config/app.docker.yml
+
 # Environment
 .env
 .env.local
+.env.docker

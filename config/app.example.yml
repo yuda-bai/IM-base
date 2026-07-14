@@ -1,0 +1,10 @@
+# 本地开发环境配置
+# 复制此文件为 app.yml 并填入你的真实密码
+mysql:
+  dns: "root:YOUR_MYSQL_PASSWORD@tcp(127.0.0.1:3306)/ginchat?charset=utf8mb4&parseTime=True&loc=Local"
+redis:
+  addr: "127.0.0.1:6379"
+  password: "YOUR_REDIS_PASSWORD"
+  db: 0
+  pool_size: 30
+  min_idle_conns: 10
