@@ -35,9 +35,39 @@ func InitConfig() {
 	viper.AddConfigPath("../config") // 从 test/ 等子目录运行时也能找到配置
 	err := viper.ReadInConfig()
 	if err != nil {
-		fmt.Println("配置文件读取错误:", err)
+		// Docker 镜像不应依赖未提交的本地配置文件，使用环境变量兜底。
+		if env == "docker" {
+			fmt.Println("未找到 Docker 配置文件，使用环境变量配置:", err)
+			viper.Set("mysql.dns", dockerMySQLDSN())
+			viper.Set("redis.addr", envOrDefault("REDIS_ADDR", "redis:6379"))
+			viper.Set("redis.password", os.Getenv("REDIS_PASSWORD"))
+			viper.Set("redis.db", envOrDefault("REDIS_DB", "0"))
+			viper.Set("redis.pool_size", envOrDefault("REDIS_POOL_SIZE", "30"))
+			viper.Set("redis.min_idle_conns", envOrDefault("REDIS_MIN_IDLE_CONNS", "10"))
+		} else {
+			fmt.Println("配置文件读取错误:", err)
+		}
 	}
 	fmt.Println("config mysql:", viper.Get("mysql"))
+}
+
+func envOrDefault(key, fallback string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func dockerMySQLDSN() string {
+	if dsn := os.Getenv("MYSQL_DSN"); dsn != "" {
+		return dsn
+	}
+	user := envOrDefault("MYSQL_USER", "root")
+	password := os.Getenv("MYSQL_ROOT_PASSWORD")
+	host := envOrDefault("MYSQL_HOST", "mysql")
+	port := envOrDefault("MYSQL_PORT", "3306")
+	database := envOrDefault("MYSQL_DATABASE", "ginchat")
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?charset=utf8mb4&parseTime=True&loc=Local", user, password, host, port, database)
 }
 func InitMySQL() {
 	newLogger := logger.New(
@@ -83,8 +113,14 @@ func InitMySQL() {
 	sqlDB.SetMaxIdleConns(10)                 // 最大空闲连接数
 	sqlDB.SetConnMaxLifetime(5 * time.Minute) // 连接最大存活时间
 	fmt.Println("数据库连接池已配置: MaxOpen=25 MaxIdle=10")
+	// 唯一索引迁移前保留最早联系人记录，清理历史重复关系。
+	if models.DB.Migrator().HasTable(&models.Contact{}) {
+		if err := models.DB.Exec(`DELETE c1 FROM contacts c1 INNER JOIN contacts c2 ON c1.owner_id = c2.owner_id AND c1.target_id = c2.target_id AND c1.type = c2.type AND c1.id > c2.id`).Error; err != nil {
+			panic("清理重复联系人失败: " + err.Error())
+		}
+	}
 
-	if err := models.DB.AutoMigrate(&models.UserBasic{}, &models.Contact{}, &models.Message{}); err != nil {
+	if err := models.DB.AutoMigrate(&models.UserBasic{}, &models.Contact{}, &models.Message{}, &models.FriendRequest{}, &models.Notification{}); err != nil {
 		panic("数据表迁移失败: " + err.Error())
 	}
 	fmt.Println("数据表迁移完成")

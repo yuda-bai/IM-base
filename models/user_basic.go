@@ -44,6 +44,15 @@ func FindUserByID(id uint) UserBasic {
 	return user
 }
 
+func FindUserByIdentity(identity string) UserBasic {
+	user := UserBasic{}
+	if DB == nil || identity == "" {
+		return user
+	}
+	DB.Where("identity = ?", identity).First(&user)
+	return user
+}
+
 // FindUserByNameAndPassword 通过用户名和密码查找用户
 func FindUserByNameAndPassword(name string, password string) UserBasic {
 	user := UserBasic{}

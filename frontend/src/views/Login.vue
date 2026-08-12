@@ -77,14 +77,18 @@ async function handleLogin() {
   loading.value = true
   errorMsg.value = ''
 
-  const result = await userStore.login(form.name, form.password)
-
-  loading.value = false
-
-  if (result.success) {
-    router.push('/chat')
-  } else {
-    errorMsg.value = result.message
+  try {
+    const result = await userStore.login(form.name, form.password)
+    if (result.success) {
+      await router.push('/chat')
+    } else {
+      errorMsg.value = result.message || '登录失败'
+    }
+  } catch (error) {
+    console.error('登录失败:', error)
+    errorMsg.value = '登录失败，请稍后重试'
+  } finally {
+    loading.value = false
   }
 }
 </script>

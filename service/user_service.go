@@ -47,6 +47,19 @@ func CreateUser(c *gin.Context) {
 	common.Success(c, "新增用户成功", nil)
 }
 
+// GetCurrentUserInfo 获取当前用户
+func GetCurrentUserInfo(c *gin.Context) {
+	user := models.UserBasic{}
+	idStr := c.Query("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		common.Fail(c, "无效的id")
+		return
+	}
+	user.ID = uint(id)
+	common.Success(c, "获取成功", user)
+}
+
 // FindUserByNameAndPassword 通过用户名和密码查找用户
 // @Summary      登入
 // @Tags         用户管理
@@ -72,7 +85,7 @@ func FindUserByNameAndPassword(c *gin.Context) {
 		return
 	}
 	// 生成token并更新用户身份标识
-	str := fmt.Sprintf("%d", time.Now().Unix())
+	str := fmt.Sprintf("%d:%d:%d", user.ID, time.Now().UnixNano(), rand.Int63())
 	temp := utils.Md5Encode(str)
 	models.UpdateIdentity(user.ID, temp)
 	user.Identity = temp
@@ -220,12 +233,13 @@ func SendUserMsg(c *gin.Context) {
 // SendMessageHttp 通过 HTTP POST 发送消息（可靠备用通道）
 func SendMessageHttp(c *gin.Context) {
 	var req struct {
-		FormId   int64  `json:"FormId" form:"FormId"`
-		TargetId int64  `json:"targetId" form:"targetId"`
-		Content  string `json:"content" form:"content"`
-		Type     int    `json:"type" form:"type"`
-		Media    string `json:"media" form:"media"`
-		Pic      string `json:"pic" form:"pic"`
+		FormId    int64  `json:"FormId" form:"FormId"`
+		TargetId  int64  `json:"targetId" form:"targetId"`
+		MessageID string `json:"messageId" form:"messageId"`
+		Content   string `json:"content" form:"content"`
+		Type      int    `json:"type" form:"type"`
+		Media     string `json:"media" form:"media"`
+		Pic       string `json:"pic" form:"pic"`
 	}
 	if err := c.ShouldBind(&req); err != nil {
 		common.Fail(c, "参数错误: "+err.Error())
@@ -238,7 +252,7 @@ func SendMessageHttp(c *gin.Context) {
 		req.Media = "1"
 	}
 
-	msg, err := models.SendMessageViaHTTP(req.FormId, req.TargetId, req.Content, req.Type, req.Media, req.Pic)
+	msg, err := models.SendMessageViaHTTP(req.FormId, req.TargetId, req.MessageID, req.Content, req.Type, req.Media, req.Pic)
 	if err != nil {
 		fmt.Println("HTTP发送消息失败:", err)
 		common.Fail(c, "发送失败")
@@ -274,31 +288,7 @@ func SearchFriend(c *gin.Context) {
 // @Success      200  {object}  map[string]interface{}
 // @Router       /user/AddFriend [post]
 func AddFriend(c *gin.Context) {
-	userIdStr := c.PostForm("userId")
-	targetIdStr := c.PostForm("targetId")
-
-	userId, err := strconv.ParseUint(userIdStr, 10, 64)
-	if err != nil {
-		common.Fail(c, "无效的用户ID")
-		return
-	}
-	targetId, err := strconv.ParseUint(targetIdStr, 10, 64)
-	if err != nil {
-		common.Fail(c, "无效的目标好友ID")
-		return
-	}
-
-	if userId == targetId {
-		common.Fail(c, "不能添加自己为好友")
-		return
-	}
-
-	err = models.AddFriend(uint(userId), uint(targetId))
-	if err != nil {
-		common.Fail(c, err.Error())
-		return
-	}
-	common.Success(c, "添加好友成功", nil)
+	common.Fail(c, "请先发送好友申请，等待对方同意")
 }
 
 // GetChatRecord 获取与某个用户的聊天记录

@@ -47,16 +47,37 @@ export function getFriendList(userid) {
   })
 }
 
-// 添加好友
-export function addFriend(userId, targetId) {
-  const formData = new URLSearchParams()
-  formData.append('userId', userId)
-  formData.append('targetId', targetId)
-  return request.post('/user/AddFriend', formData, {
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
-    }
-  })
+// 好友申请
+export function createFriendRequest(userId, targetId, remark = '') {
+  return request.post('/user/friend-requests', { userId, targetId, remark })
+}
+
+export function getReceivedFriendRequests() {
+  return request.get('/user/friend-requests/received')
+}
+
+export function getSentFriendRequests() {
+  return request.get('/user/friend-requests/sent')
+}
+
+export function getFriendRequestUnreadCount() {
+  return request.get('/user/friend-requests/unread-count')
+}
+
+export function markFriendRequestsRead(ids = []) {
+  return request.post('/user/friend-requests/read', { ids })
+}
+
+export function acceptFriendRequest(userId, requestId) {
+  return request.post('/user/friend-requests/accept', { userId, requestId })
+}
+
+export function rejectFriendRequest(userId, requestId, reason = '') {
+  return request.post('/user/friend-requests/reject', { userId, requestId, reason })
+}
+
+export function cancelFriendRequest(userId, requestId) {
+  return request.post('/user/friend-requests/cancel', { userId, requestId })
 }
 
 // 上传图片
@@ -83,6 +104,7 @@ export function sendMessageHttp(data) {
   const formData = new URLSearchParams()
   formData.append('FormId', data.FormId)
   formData.append('targetId', data.targetId)
+  formData.append('messageId', data.messageId || '')
   formData.append('content', data.content)
   formData.append('type', data.type || 1)
   formData.append('media', data.media || '1')

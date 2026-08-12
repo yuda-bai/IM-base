@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { loginUser, registerUser, getUserList, updateUser as updateUserApi, getFriendList, addFriend as addFriendApi } from '../api/user'
+import { loginUser, registerUser, getUserList, updateUser as updateUserApi, getFriendList, createFriendRequest, getReceivedFriendRequests, getSentFriendRequests, getFriendRequestUnreadCount, markFriendRequestsRead, acceptFriendRequest, rejectFriendRequest, cancelFriendRequest } from '../api/user'
 
 export const useUserStore = defineStore('user', () => {
   // 当前用户信息
@@ -9,6 +9,9 @@ export const useUserStore = defineStore('user', () => {
   const userList = ref([])
   // 好友列表
   const friendList = ref([])
+  const receivedFriendRequests = ref([])
+  const sentFriendRequests = ref([])
+  const friendRequestUnreadCount = ref(0)
   // 在线用户 ID 集合
   const onlineUserIds = ref(new Set())
 
@@ -240,14 +243,21 @@ export const useUserStore = defineStore('user', () => {
    * 用户登录
    */
   async function login(name, password) {
-    const res = await loginUser(name, password)
-    const normalizedUser = normalizeUser(res.data)
-    if (res.code === 0 && normalizedUser) {
-      const finalUser = persistLoginIdentity(normalizedUser, name)
-      currentUser.value = finalUser
-      return { success: true, message: res.message }
+    try {
+      const res = await loginUser(name, password)
+      const normalizedUser = normalizeUser(res.data)
+      if (res.code === 0 && normalizedUser) {
+        const finalUser = persistLoginIdentity(normalizedUser, name)
+        currentUser.value = finalUser
+        return { success: true, message: res.message }
+      }
+      return { success: false, message: res.message || '登录失败' }
+    } catch (error) {
+      const status = error?.response?.status
+      const message = error?.response?.data?.message ||
+        (status ? `登录请求失败（${status}）` : '无法连接服务器，请确认后端服务已启动')
+      return { success: false, message }
     }
-    return { success: false, message: res.message || '登录失败' }
   }
 
   /**
@@ -305,16 +315,77 @@ export const useUserStore = defineStore('user', () => {
   /**
    * 添加好友
    */
-  async function addFriendAction(targetId) {
+  async function addFriendAction(targetId, remark = '') {
     if (!currentUser.value?.ID) {
       return { success: false, message: '未登录' }
     }
-    const res = await addFriendApi(currentUser.value.ID, targetId)
+    const res = await createFriendRequest(currentUser.value.ID, targetId, remark)
     if (res.code === 0) {
-      await fetchFriendList()
       return { success: true, message: res.message }
     }
     return { success: false, message: res.message || '添加好友失败' }
+  }
+
+  function normalizeFriendRequest(request) {
+    if (!request || typeof request !== 'object') return null
+    return {
+      ...request,
+      ID: normalizeId(request.ID ?? request.id),
+      FromUserID: normalizeId(request.FromUserID ?? request.fromUserId ?? request.from_user_id),
+      ToUserID: normalizeId(request.ToUserID ?? request.toUserId ?? request.to_user_id),
+      Status: request.Status ?? request.status ?? 'pending',
+      Remark: request.Remark ?? request.remark ?? '',
+      RejectReason: request.RejectReason ?? request.rejectReason ?? '',
+      IsRead: Boolean(request.IsRead ?? request.isRead ?? false)
+    }
+  }
+
+  async function fetchFriendRequests() {
+    if (!currentUser.value?.ID) return
+    const [received, sent, unread] = await Promise.all([
+      getReceivedFriendRequests(),
+      getSentFriendRequests(),
+      getFriendRequestUnreadCount()
+    ])
+    if (received.code === 0) receivedFriendRequests.value = (received.data || []).map(normalizeFriendRequest).filter(Boolean)
+    if (sent.code === 0) sentFriendRequests.value = (sent.data || []).map(normalizeFriendRequest).filter(Boolean)
+    if (unread.code === 0) friendRequestUnreadCount.value = Number(unread.data?.count || 0)
+  }
+
+  async function acceptFriendRequestAction(requestId) {
+    const res = await acceptFriendRequest(currentUser.value?.ID, requestId)
+    if (res.code === 0) {
+      await Promise.all([fetchFriendRequests(), fetchFriendList()])
+      return { success: true, message: res.message }
+    }
+    return { success: false, message: res.message || '同意好友申请失败' }
+  }
+
+  async function rejectFriendRequestAction(requestId, reason = '') {
+    const res = await rejectFriendRequest(currentUser.value?.ID, requestId, reason)
+    if (res.code === 0) {
+      await fetchFriendRequests()
+      return { success: true, message: res.message }
+    }
+    return { success: false, message: res.message || '拒绝好友申请失败' }
+  }
+
+  async function cancelFriendRequestAction(requestId) {
+    const res = await cancelFriendRequest(currentUser.value?.ID, requestId)
+    if (res.code === 0) {
+      await fetchFriendRequests()
+      return { success: true, message: res.message }
+    }
+    return { success: false, message: res.message || '撤回好友申请失败' }
+  }
+
+  async function markFriendRequestsReadAction(ids = []) {
+    const res = await markFriendRequestsRead(ids)
+    if (res.code === 0) {
+      await fetchFriendRequests()
+      return true
+    }
+    return false
   }
 
   /**
@@ -339,6 +410,9 @@ export const useUserStore = defineStore('user', () => {
     currentUser,
     userList,
     friendList,
+    receivedFriendRequests,
+    sentFriendRequests,
+    friendRequestUnreadCount,
     onlineUserIds,
     isLoggedIn,
     login,
@@ -349,6 +423,11 @@ export const useUserStore = defineStore('user', () => {
     fetchUserList,
     fetchFriendList,
     addFriendAction,
+    fetchFriendRequests,
+    acceptFriendRequestAction,
+    rejectFriendRequestAction,
+    cancelFriendRequestAction,
+    markFriendRequestsReadAction,
     isFriend,
     setUserOnline,
     normalizeContact

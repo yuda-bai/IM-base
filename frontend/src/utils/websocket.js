@@ -90,6 +90,11 @@ class ChatSocket {
             timestamp: serverTime,
             messageId: data.messageId || data.MessageId || `srv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
             isOffline: !!(data.isOffline ?? data.is_offline ?? false)
+            ,event: data.event
+            ,requestId: data.requestId
+            ,fromUserId: data.fromUserId
+            ,toUserId: data.toUserId
+            ,status: data.status
           })
         } catch {
           this.notifyListeners({

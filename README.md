@@ -88,6 +88,9 @@ npm run dev
 
 ```bash
 docker compose up -d --build
+# 默认后端地址：http://localhost:8081
+# 如果 8081 被占用，可在 .env 中设置 GINCHAT_HOST_PORT
+# 默认数据库卷为 ginchat-mysql-data，旧数据卷不会被删除
 ```
 
 ---

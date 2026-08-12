@@ -20,16 +20,17 @@ import (
 
 type Message struct {
 	gorm.Model
-	FormId    int64  `json:"FormId"`    //发送者id
-	TargetId  int64  `json:"TargetId"`  //接收者id
-	Type      int    `json:"Type"`      //消息类型 1私聊  2群聊 3广播
-	Media     string `json:"Media"`     //消息媒体类型 1 文本 2表情包 3 图片 4 音频
-	Content   string `json:"Content"`   //消息内容
-	Pic       string `json:"Pic"`       //图片
-	Url       string `json:"Url"`       //链接
-	Desc      string `json:"Desc"`      //描述
-	IsOffline bool   `json:"IsOffline"` //是否离线消息
-	Amount    int    `json:"Amount"`    //其他数字统计
+	FormId    int64  `json:"FormId"`                                                            //发送者id
+	TargetId  int64  `json:"TargetId"`                                                          //接收者id
+	MessageID string `gorm:"column:message_id;size:64;index" json:"messageId" form:"messageId"` //客户端消息id，用于发送确认匹配
+	Type      int    `json:"Type"`                                                              //消息类型 1私聊  2群聊 3广播
+	Media     string `json:"Media"`                                                             //消息媒体类型 1 文本 2表情包 3 图片 4 音频
+	Content   string `json:"Content"`                                                           //消息内容
+	Pic       string `json:"Pic"`                                                               //图片
+	Url       string `json:"Url"`                                                               //链接
+	Desc      string `json:"Desc"`                                                              //描述
+	IsOffline bool   `json:"IsOffline"`                                                         //是否离线消息
+	Amount    int    `json:"Amount"`                                                            //其他数字统计
 }
 
 func (table *Message) TableName() string {
@@ -115,14 +116,15 @@ func OfflineMessageKey(userId int64) string {
 }
 
 // SendMessageViaHTTP 通过 HTTP POST 发送消息（可靠备用通道）
-func SendMessageViaHTTP(formId, targetId int64, content string, msgType int, media, pic string) (*Message, error) {
+func SendMessageViaHTTP(formId, targetId int64, messageID, content string, msgType int, media, pic string) (*Message, error) {
 	msg := Message{
-		FormId:   formId,
-		TargetId: targetId,
-		Type:     msgType,
-		Content:  content,
-		Media:    media,
-		Pic:      pic,
+		FormId:    formId,
+		TargetId:  targetId,
+		MessageID: messageID,
+		Type:      msgType,
+		Content:   content,
+		Media:     media,
+		Pic:       pic,
 	}
 	if err := SaveMessage(&msg); err != nil {
 		return nil, err
@@ -245,15 +247,20 @@ func sendOfflineMessages(userId int64) {
 			}
 		}
 		msgData := map[string]interface{}{
-			"userId":    message.FormId,
-			"targetId":  message.TargetId,
-			"type":      message.Type,
-			"userName":  senderName,
-			"content":   message.Content,
-			"pic":       message.Pic,
-			"url":       message.Url,
-			"media":     message.Media,
-			"messageId": fmt.Sprintf("%d", message.ID),
+			"userId":   message.FormId,
+			"targetId": message.TargetId,
+			"type":     message.Type,
+			"userName": senderName,
+			"content":  message.Content,
+			"pic":      message.Pic,
+			"url":      message.Url,
+			"media":    message.Media,
+			"messageId": func() string {
+				if message.MessageID != "" {
+					return message.MessageID
+				}
+				return fmt.Sprintf("%d", message.ID)
+			}(),
 			"timestamp": message.CreatedAt.Format("2006-01-02 15:04:05"),
 			"isOffline": true,
 		}

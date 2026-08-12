@@ -18,7 +18,7 @@
     </div>
 
     <!-- Tab 切换栏 -->
-    <el-tabs v-model="activeTab" class="sidebar-tabs" stretch>
+    <el-tabs v-model="activeTab" class="sidebar-tabs" stretch @tab-change="handleTabChange">
       <el-tab-pane name="chat">
         <template #label>
           <span>💬 聊天室</span>
@@ -27,6 +27,13 @@
       <el-tab-pane name="friends">
         <template #label>
           <span>👥 好友</span>
+        </template>
+      </el-tab-pane>
+      <el-tab-pane name="requests">
+        <template #label>
+          <el-badge :value="friendRequestUnreadCount" :hidden="!friendRequestUnreadCount" :max="99">
+            <span>申请</span>
+          </el-badge>
         </template>
       </el-tab-pane>
     </el-tabs>
@@ -162,6 +169,43 @@
         </el-button>
       </div>
     </template>
+
+    <template v-if="activeTab === 'requests'">
+      <div class="section-title">
+        <span>收到的申请</span>
+        <span class="member-count">{{ receivedFriendRequests.length }}</span>
+      </div>
+      <div class="request-list">
+        <div v-for="request in receivedFriendRequests" :key="request.ID" class="request-item">
+          <div class="request-main">
+            <strong>{{ request.fromUserName || request.FromUserName || `用户 ${request.FromUserID}` }}</strong>
+            <span class="request-remark">{{ request.Remark || '请求添加你为好友' }}</span>
+            <span class="request-status">{{ statusLabel(request.Status) }}</span>
+          </div>
+          <div v-if="request.Status === 'pending'" class="request-actions">
+            <el-button type="primary" size="small" @click="emit('accept-friend-request', request.ID)">同意</el-button>
+            <el-button size="small" @click="emit('reject-friend-request', request.ID)">拒绝</el-button>
+          </div>
+        </div>
+        <div v-if="receivedFriendRequests.length === 0" class="empty-list">暂无收到的申请</div>
+      </div>
+
+      <div class="section-title sent-title">
+        <span>发出的申请</span>
+        <span class="member-count">{{ sentFriendRequests.length }}</span>
+      </div>
+      <div class="request-list">
+        <div v-for="request in sentFriendRequests" :key="request.ID" class="request-item">
+          <div class="request-main">
+            <strong>{{ request.toUserName || request.ToUserName || `用户 ${request.ToUserID}` }}</strong>
+            <span class="request-remark">{{ request.Remark || '好友申请' }}</span>
+            <span class="request-status">{{ statusLabel(request.Status) }}</span>
+          </div>
+          <el-button v-if="request.Status === 'pending'" size="small" @click="emit('cancel-friend-request', request.ID)">撤回</el-button>
+        </div>
+        <div v-if="sentFriendRequests.length === 0" class="empty-list">暂无发出的申请</div>
+      </div>
+    </template>
   </aside>
 </template>
 
@@ -174,10 +218,13 @@ const props = defineProps({
   friendList: { type: Array, default: () => [] },
   onlineIds: { type: Set, default: () => new Set() },
   currentUser: { type: Object, default: null },
-  activeFriendId: { type: [Number, String], default: null }
+  activeFriendId: { type: [Number, String], default: null },
+  receivedFriendRequests: { type: Array, default: () => [] },
+  sentFriendRequests: { type: Array, default: () => [] },
+  friendRequestUnreadCount: { type: Number, default: 0 }
 })
 
-const emit = defineEmits(['logout', 'edit-profile', 'refresh-users', 'refresh-friends', 'add-friend', 'select-friend'])
+const emit = defineEmits(['logout', 'edit-profile', 'refresh-users', 'refresh-friends', 'add-friend', 'select-friend', 'accept-friend-request', 'reject-friend-request', 'cancel-friend-request', 'friend-requests-opened'])
 
 const activeTab = ref('chat')
 const searchQuery = ref('')
@@ -236,6 +283,14 @@ function handleAddFriend(user) {
 
 function handleSelectFriend(friend) {
   emit('select-friend', friend)
+}
+
+function handleTabChange(tab) {
+  if (tab === 'requests') emit('friend-requests-opened')
+}
+
+function statusLabel(status) {
+  return ({ pending: '待处理', accepted: '已同意', rejected: '已拒绝', cancelled: '已撤回', expired: '已过期' })[status] || status || '未知'
 }
 </script>
 
@@ -515,6 +570,52 @@ function handleSelectFriend(friend) {
   text-align: center;
   color: #72767d;
   font-size: 13px;
+}
+
+.request-list {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 0 8px;
+}
+
+.request-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 8px;
+  border-bottom: 1px solid #3a3d42;
+}
+
+.request-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.request-main strong {
+  font-size: 13px;
+  color: #fff;
+}
+
+.request-remark,
+.request-status {
+  overflow: hidden;
+  color: #b9bbbe;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sent-title {
+  margin-top: 12px;
+}
+
+.request-actions {
+  display: flex;
+  flex-shrink: 0;
+  gap: 4px;
 }
 
 /* ---- 底部 ---- */

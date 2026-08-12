@@ -78,6 +78,7 @@
             <div class="bubble-meta">
               <span v-if="msg.isOffline" class="offline-tag">离线消息</span>
               <span v-else-if="msg.pending" class="pending-tag">发送中</span>
+              <span v-else-if="msg.failed" class="pending-tag failed-tag" :title="msg.errorMessage || '发送失败'">发送失败</span>
               <span v-else-if="uploading" class="pending-tag">上传中</span>
               <span class="bubble-time">{{ formatTime(msg.timestamp) }}</span>
             </div>

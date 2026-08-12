@@ -7,11 +7,18 @@
       :online-ids="userStore.onlineUserIds"
       :current-user="userStore.currentUser"
       :active-friend-id="selectedFriend?.ID"
+      :received-friend-requests="userStore.receivedFriendRequests"
+      :sent-friend-requests="userStore.sentFriendRequests"
+      :friend-request-unread-count="userStore.friendRequestUnreadCount"
       @logout="handleLogout"
       @edit-profile="showProfile = true"
       @refresh-users="loadUsers"
       @refresh-friends="loadFriends"
       @add-friend="handleAddFriend"
+      @accept-friend-request="handleAcceptFriendRequest"
+      @reject-friend-request="handleRejectFriendRequest"
+      @cancel-friend-request="handleCancelFriendRequest"
+      @friend-requests-opened="handleFriendRequestsOpened"
       @select-friend="handleSelectFriend"
     />
 
@@ -186,6 +193,7 @@ onMounted(() => {
 
   loadUsers()
   loadFriends()
+  userStore.fetchFriendRequests()
 
   const user = userStore.currentUser
   if (!user || user.ID == null) {
@@ -206,6 +214,10 @@ onMounted(() => {
 
   removeMessageListener = chatSocket.onMessage((msg) => {
     console.log('WebSocket received message:', msg)
+    if (msg.type === 'friend_request') {
+      handleFriendRequestEvent(msg)
+      return
+    }
     if (msg.type === 'system') {
       if (msg.content.includes('已连接')) {
         connectionStatus.value = 'connected'
@@ -281,6 +293,37 @@ async function loadFriends() {
   await userStore.fetchFriendList()
 }
 
+function markMessageSent(messageId, response) {
+  const idx = messages.value.findIndex(message =>
+    String(message.messageId) === String(messageId)
+  )
+  if (idx < 0) return
+
+  const serverMessage = response.data || {}
+  messages.value[idx] = {
+    ...messages.value[idx],
+    pending: false,
+    serverId: serverMessage.ID ?? serverMessage.id ?? messages.value[idx].serverId,
+    timestamp: serverMessage.CreatedAt ?? serverMessage.createdAt ?? messages.value[idx].timestamp
+  }
+  saveMessagesToStorage()
+}
+
+function markMessageFailed(messageId, response) {
+  const idx = messages.value.findIndex(message =>
+    String(message.messageId) === String(messageId)
+  )
+  if (idx < 0) return
+
+  messages.value[idx] = {
+    ...messages.value[idx],
+    pending: false,
+    failed: true,
+    errorMessage: response?.message || '发送失败'
+  }
+  saveMessagesToStorage()
+}
+
 async function handleSendMessage(content) {
   const user = userStore.currentUser
   if (!user || user.ID == null) {
@@ -322,21 +365,18 @@ async function handleSendMessage(content) {
     const res = await sendMessageHttp({
       FormId: normalizedUserId,
       targetId: normalizedTargetId,
+      messageId,
       content,
       type: 1,
       media: '1',
       pic: ''
     })
-    console.log('HTTP send success:', res)
-    // 更新本地消息状态
-    const idx = messages.value.findIndex(m => m.messageId === messageId)
-    if (idx >= 0) {
-      messages.value[idx].pending = false
-      if (res.data?.ID) {
-        messages.value[idx].serverId = res.data.ID
-      }
+    console.log('HTTP send response:', res)
+    if (res?.code !== 0) {
+      markMessageFailed(messageId, res)
+      return
     }
-    saveMessagesToStorage()
+    markMessageSent(messageId, res)
   } catch (e) {
     console.warn('HTTP send failed, trying WebSocket fallback:', e)
     // 备用：WebSocket 发送
@@ -403,10 +443,13 @@ async function handleSendImage(file, callbacks) {
   saveMessagesToStorage()
 
   try {
-    await sendMessageHttp({ FormId: normalizedUserId, targetId: normalizedTargetId, content: '[图片]', type: 1, media: '3', pic: imageUrl })
-    const idx = messages.value.findIndex(m => m.messageId === messageId)
-    if (idx >= 0) messages.value[idx].pending = false
-    saveMessagesToStorage()
+    const res = await sendMessageHttp({ FormId: normalizedUserId, targetId: normalizedTargetId, messageId, content: '[图片]', type: 1, media: '3', pic: imageUrl })
+    if (res?.code !== 0) {
+      markMessageFailed(messageId, res)
+      callbacks?.onError?.(res?.message || '图片发送失败')
+      return
+    }
+    markMessageSent(messageId, res)
   } catch (e) {
     console.warn('Image HTTP send failed, WS fallback:', e)
     chatSocket.sendMessage('[图片]', 1, normalizedTargetId, messageId, '3', imageUrl)
@@ -475,10 +518,13 @@ async function handleSendVoice(file, callbacks) {
   saveMessagesToStorage()
 
   try {
-    await sendMessageHttp({ FormId: normalizedUserId, targetId: normalizedTargetId, content: '[语音]', type: 1, media: '4', pic: audioUrl })
-    const idx = messages.value.findIndex(m => m.messageId === messageId)
-    if (idx >= 0) messages.value[idx].pending = false
-    saveMessagesToStorage()
+    const res = await sendMessageHttp({ FormId: normalizedUserId, targetId: normalizedTargetId, messageId, content: '[语音]', type: 1, media: '4', pic: audioUrl })
+    if (res?.code !== 0) {
+      markMessageFailed(messageId, res)
+      callbacks?.onError?.(res?.message || '语音发送失败')
+      return
+    }
+    markMessageSent(messageId, res)
   } catch (e) {
     console.warn('Voice HTTP send failed, WS fallback:', e)
     chatSocket.sendMessage('[语音]', 1, normalizedTargetId, messageId, '4', audioUrl)
@@ -528,7 +574,7 @@ function normalizeMsgFromServer(msg) {
     duration: 0,
     userName: msg.UserName ?? msg.userName ?? '',
     timestamp: msg.CreatedAt ?? msg.createdAt ?? msg.timestamp ?? '',
-    messageId: String(msg.ID ?? msg.id ?? msg.messageId ?? ''),
+    messageId: String(msg.messageId ?? msg.MessageId ?? msg.ID ?? msg.id ?? ''),
     isOffline: !!(msg.IsOffline ?? msg.isOffline ?? msg.is_offline ?? false),
     pending: false
   }
@@ -633,9 +679,40 @@ function handleReconnect() {
 }
 
 async function handleAddFriend(targetId) {
-  const result = await userStore.addFriendAction(targetId)
+  const remark = window.prompt('申请备注（可选）', '') || ''
+  const result = await userStore.addFriendAction(targetId, remark)
   if (!result.success) {
     alert(result.message)
+  }
+}
+
+async function handleFriendRequestsOpened() {
+  await userStore.markFriendRequestsReadAction()
+}
+
+async function handleAcceptFriendRequest(requestId) {
+  const result = await userStore.acceptFriendRequestAction(requestId)
+  if (!result.success) alert(result.message)
+}
+
+async function handleRejectFriendRequest(requestId) {
+  const reason = window.prompt('拒绝原因（可选）', '') || ''
+  const result = await userStore.rejectFriendRequestAction(requestId, reason)
+  if (!result.success) alert(result.message)
+}
+
+async function handleCancelFriendRequest(requestId) {
+  const result = await userStore.cancelFriendRequestAction(requestId)
+  if (!result.success) alert(result.message)
+}
+
+function handleFriendRequestEvent(event) {
+  userStore.fetchFriendRequests()
+  if (event.event === 'accepted') {
+    userStore.fetchFriendList()
+  }
+  if (event.event === 'created') {
+    console.info('收到新的好友申请')
   }
 }
 

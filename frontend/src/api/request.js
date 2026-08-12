@@ -10,6 +10,21 @@ const request = axios.create({
   }
 })
 
+request.interceptors.request.use((config) => {
+  try {
+    const saved = sessionStorage.getItem('ginchat_user') || localStorage.getItem('ginchat_user')
+    const user = saved ? JSON.parse(saved) : null
+    const identity = user?.Identity || user?.identity || sessionStorage.getItem('ginchat_user_identity') || localStorage.getItem('ginchat_user_identity') || ''
+    if (identity) {
+      config.headers = config.headers || {}
+      config.headers.Authorization = `Bearer ${identity}`
+    }
+  } catch {
+    // 存储数据损坏时由服务端返回未授权，避免阻断其他请求。
+  }
+  return config
+})
+
 // 响应拦截器
 request.interceptors.response.use(
   (response) => {
